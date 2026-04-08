@@ -1,7 +1,7 @@
 """
 Probit Analysis Tool - Web Application
 Streamlit-based web interface for bioassay probit regression analysis
-Version: 10.2 Web
+Version: 10.3 Web
 
 Run with: streamlit run probit_web_app.py
 """
@@ -139,41 +139,104 @@ def preprocess_data(df):
     return df
 
 def fit_probit_model(df):
-    """Fit probit regression model"""
+    """Fit probit regression model with robust convergence checking"""
     # Prepare data
     X = sm.add_constant(df['log_concentration'])
     y = df[['mortality_adj', 'alive_adj']].values
     
-    # Fit model
-    model = sm.GLM(y, X, family=sm.families.Binomial(link=sm.families.links.Probit()))
-    result = model.fit()
+    # Fit model with error handling
+    try:
+        model = sm.GLM(y, X, family=sm.families.Binomial(link=sm.families.links.Probit()))
+        result = model.fit()
+        
+        # CRITICAL FIX: Check model convergence
+        if not result.converged:
+            raise RuntimeError("Model did not converge. This may indicate:\n" +
+                             "• Insufficient data points\n" +
+                             "• Poor concentration selection\n" +
+                             "• High variability between replicates\n" +
+                             "Try using more data points or better concentration spacing.")
+        
+        # CRITICAL FIX: Validate model parameters
+        if not np.isfinite(result.params).all():
+            raise RuntimeError("Model produced non-finite parameters. This may indicate:\n" +
+                             "• Extreme concentration values\n" +
+                             "• Complete separation (all 0% or 100% mortality)\n" +
+                             "• Numerical instability\n" +
+                             "Check data for extreme values.")
+        
+        # CRITICAL FIX: Check parameter standard errors
+        if not np.isfinite(result.bse).all() or (result.bse == 0).any():
+            raise RuntimeError("Invalid parameter standard errors. This may indicate:\n" +
+                             "• Model fitting problems\n" +
+                             "• Insufficient variability in data\n" +
+                             "• Numerical issues with covariance matrix")
     
-    # Goodness of fit test
+    except Exception as e:
+        if isinstance(e, RuntimeError):
+            raise  # Re-raise our custom error messages
+        else:
+            raise RuntimeError(f"Model fitting failed: {str(e)}\n" +
+                             "This may be due to data quality issues. Please check:\n" +
+                             "• Data format and values\n" +
+                             "• Concentration range selection\n" +
+                             "• Mortality counts vs. sample sizes")
+    
+    # Goodness of fit test with validation
     observed = df['mortality'].values
     n_values = df['n'].values
     predicted_prob = result.predict(X)
+    
+    # CRITICAL FIX: Validate predictions
+    if not np.isfinite(predicted_prob).all() or (predicted_prob < 0).any() or (predicted_prob > 1).any():
+        raise RuntimeError("Model produced invalid probability predictions. Check model parameters.")
+    
     expected = predicted_prob * n_values
     
+    # Avoid division by zero in chi-square calculation
     chi_square = np.sum(((observed - expected) ** 2) / (expected + CHI_SQUARE_EPSILON))
     df_degrees = len(df) - 2
+    
+    if df_degrees <= 0:
+        raise RuntimeError("Insufficient degrees of freedom for goodness-of-fit test. Need at least 3 data points.")
+    
     p_value = 1 - chi2.cdf(chi_square, df_degrees)
     
     return result, chi_square, df_degrees, p_value
 
 def compute_ldx_with_ci(result, x, alpha=ALPHA_LEVEL):
-    """Compute LDx with confidence intervals"""
+    """Compute LDx with confidence intervals with robust error checking"""
     intercept, slope = result.params
+    
+    # CRITICAL FIX: Validate model parameters
+    if not np.isfinite(intercept) or not np.isfinite(slope):
+        raise ValueError("Model parameters are not finite. Check data quality and model convergence.")
+    
+    # CRITICAL FIX: Check for problematic slopes that would cause division by zero
+    if abs(slope) < 1e-10:
+        raise ValueError("Slope is too close to zero (flat dose-response curve). " +
+                        "Check if concentrations span an appropriate range for the mortality response.")
+    
     target_quantile = norm.ppf(x / 100.0)
     
-    # Point estimate
+    # Point estimate with validation
     log_conc_ld = (target_quantile - intercept) / slope
     ld = 10 ** log_conc_ld
     
-    # Confidence interval using delta method
+    # CRITICAL FIX: Validate LD estimate
+    if not np.isfinite(ld) or ld <= 0:
+        raise ValueError(f"Invalid LD{x} estimate: {ld}. " +
+                        "This may indicate model fitting problems or extreme parameter values.")
+    
+    # Confidence interval using delta method with validation
     cov_matrix = result.cov_params()
     var_intercept = cov_matrix.iloc[0, 0]
     var_slope = cov_matrix.iloc[1, 1]
     cov_intercept_slope = cov_matrix.iloc[0, 1]
+    
+    # CRITICAL FIX: Validate covariance matrix values
+    if not (np.isfinite(var_intercept) and np.isfinite(var_slope) and np.isfinite(cov_intercept_slope)):
+        raise ValueError("Invalid covariance matrix values. Check model fitting.")
     
     grad_intercept = -1 / slope
     grad_slope = -(target_quantile - intercept) / (slope ** 2)
@@ -181,6 +244,10 @@ def compute_ldx_with_ci(result, x, alpha=ALPHA_LEVEL):
     var_log_ld = (grad_intercept ** 2) * var_intercept + \
                   (grad_slope ** 2) * var_slope + \
                   2 * grad_intercept * grad_slope * cov_intercept_slope
+    
+    # CRITICAL FIX: Check for negative variance
+    if var_log_ld < 0:
+        raise ValueError("Negative variance calculated in LD estimation. Check model covariance matrix.")
     
     se_log_ld = np.sqrt(var_log_ld)
     z_critical = norm.ppf(1 - alpha / 2)
@@ -190,6 +257,10 @@ def compute_ldx_with_ci(result, x, alpha=ALPHA_LEVEL):
     
     ld_lower = 10 ** log_ld_lower
     ld_upper = 10 ** log_ld_upper
+    
+    # CRITICAL FIX: Validate confidence interval bounds
+    if not (np.isfinite(ld_lower) and np.isfinite(ld_upper) and ld_lower > 0 and ld_upper > 0):
+        raise ValueError(f"Invalid confidence interval bounds: [{ld_lower}, {ld_upper}]")
     
     return ld, ld_lower, ld_upper
 
@@ -402,8 +473,26 @@ def create_pdf_single_dataset(df, result, chi_square, df_degrees, p_value, strai
     
     return pdf
 
-def create_pdf_single_with_plots(df, df_processed, result, chi_square, df_degrees, p_value, strain, chemical):
-    """Create PDF report with plots for single dataset analysis"""
+def create_pdf_single_with_plots(df, df_processed, result, chi_square, df_degrees, p_value, strain, chemical, options=None):
+    """Create PDF report with plots for single dataset analysis
+    
+    Args:
+        options: Dict with boolean flags for what to include in PDF
+                Keys: include_data_summary, include_raw_data, include_ld_estimates,
+                      include_model_fit, include_parameters, include_mortality_plot, include_probit_plot
+    """
+    # Default options - include everything
+    if options is None:
+        options = {
+            'include_data_summary': True,
+            'include_raw_data': True,
+            'include_ld_estimates': True,
+            'include_model_fit': True,
+            'include_parameters': True,
+            'include_mortality_plot': True,
+            'include_probit_plot': True
+        }
+    
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
@@ -421,93 +510,104 @@ def create_pdf_single_with_plots(df, df_processed, result, chi_square, df_degree
     pdf.ln(5)
     
     # Data Summary
-    pdf.set_font('Arial', 'B', 14)
-    pdf.cell(0, 10, 'Data Summary', 0, 1)
-    pdf.set_font('Arial', '', 11)
-    pdf.cell(0, 6, f'Number of observations: {len(df)}', 0, 1)
-    pdf.cell(0, 6, f'Total individuals tested: {int(df["n"].sum())}', 0, 1)
-    pdf.cell(0, 6, f'Total mortality: {int(df["mortality"].sum())}', 0, 1)
-    overall_mort = (df['mortality'].sum() / df['n'].sum() * 100)
-    pdf.cell(0, 6, f'Overall mortality: {overall_mort:.2f}%', 0, 1)
-    pdf.ln(5)
+    if options.get('include_data_summary', True):
+        pdf.set_font('Arial', 'B', 14)
+        pdf.cell(0, 10, 'Data Summary', 0, 1)
+        pdf.set_font('Arial', '', 11)
+        pdf.cell(0, 6, f'Number of observations: {len(df)}', 0, 1)
+        pdf.cell(0, 6, f'Total individuals tested: {int(df["n"].sum())}', 0, 1)
+        pdf.cell(0, 6, f'Total mortality: {int(df["mortality"].sum())}', 0, 1)
+        overall_mort = (df['mortality'].sum() / df['n'].sum() * 100)
+        pdf.cell(0, 6, f'Overall mortality: {overall_mort:.2f}%', 0, 1)
+        pdf.ln(5)
     
     # Raw Data Table
-    pdf.set_font('Arial', 'B', 14)
-    pdf.cell(0, 10, 'Raw Data', 0, 1)
-    pdf.set_font('Arial', 'B', 10)
-    pdf.cell(45, 6, 'Concentration', 1)
-    pdf.cell(35, 6, 'N Tested', 1)
-    pdf.cell(35, 6, 'Mortality', 1)
-    pdf.cell(45, 6, 'Mortality %', 1)
-    pdf.ln()
-    
-    pdf.set_font('Arial', '', 10)
-    for idx, row in df.iterrows():
-        mort_pct = (row['mortality'] / row['n']) * 100
-        pdf.cell(45, 6, f"{row['concentration']:.6f}", 1)
-        pdf.cell(35, 6, f"{int(row['n'])}", 1)
-        pdf.cell(35, 6, f"{int(row['mortality'])}", 1)
-        pdf.cell(45, 6, f"{mort_pct:.2f}%", 1)
+    if options.get('include_raw_data', True):
+        pdf.set_font('Arial', 'B', 14)
+        pdf.cell(0, 10, 'Raw Data', 0, 1)
+        pdf.set_font('Arial', 'B', 10)
+        pdf.cell(45, 6, 'Concentration', 1)
+        pdf.cell(35, 6, 'N Tested', 1)
+        pdf.cell(35, 6, 'Mortality', 1)
+        pdf.cell(45, 6, 'Mortality %', 1)
         pdf.ln()
-    pdf.ln(5)
+        
+        pdf.set_font('Arial', '', 10)
+        for idx, row in df.iterrows():
+            mort_pct = (row['mortality'] / row['n']) * 100
+            pdf.cell(45, 6, f"{row['concentration']:.6f}", 1)
+            pdf.cell(35, 6, f"{int(row['n'])}", 1)
+            pdf.cell(35, 6, f"{int(row['mortality'])}", 1)
+            pdf.cell(45, 6, f"{mort_pct:.2f}%", 1)
+            pdf.ln()
+        pdf.ln(5)
     
     # LD Estimates
-    pdf.set_font('Arial', 'B', 14)
-    pdf.cell(0, 10, 'Lethal Dose Estimates (95% CI)', 0, 1)
-    pdf.set_font('Arial', '', 11)
-    for ld_level in LD_LEVELS:
-        ld, lower, upper = compute_ldx_with_ci(result, ld_level)
-        pdf.cell(0, 6, f'LD{ld_level}: {ld:.6f} ({lower:.6f} - {upper:.6f})', 0, 1)
-    pdf.ln(5)
+    if options.get('include_ld_estimates', True):
+        pdf.set_font('Arial', 'B', 14)
+        pdf.cell(0, 10, 'Lethal Dose Estimates (95% CI)', 0, 1)
+        pdf.set_font('Arial', '', 11)
+        for ld_level in LD_LEVELS:
+            ld, lower, upper = compute_ldx_with_ci(result, ld_level)
+            pdf.cell(0, 6, f'LD{ld_level}: {ld:.6f} ({lower:.6f} - {upper:.6f})', 0, 1)
+        pdf.ln(5)
     
     # Model Fit
-    pdf.set_font('Arial', 'B', 14)
-    pdf.cell(0, 10, 'Model Fit Statistics', 0, 1)
-    pdf.set_font('Arial', '', 11)
-    pdf.cell(0, 6, f'Chi-Square: {chi_square:.4f}', 0, 1)
-    pdf.cell(0, 6, f'Degrees of Freedom: {df_degrees}', 0, 1)
-    pdf.cell(0, 6, f'p-value: {p_value:.4f}', 0, 1)
-    fit_text = 'Good fit (p > 0.05)' if p_value >= 0.05 else 'Poor fit (p < 0.05)'
-    pdf.cell(0, 6, f'Interpretation: {fit_text}', 0, 1)
-    pdf.ln(5)
+    if options.get('include_model_fit', True):
+        pdf.set_font('Arial', 'B', 14)
+        pdf.cell(0, 10, 'Model Fit Statistics', 0, 1)
+        pdf.set_font('Arial', '', 11)
+        pdf.cell(0, 6, f'Chi-Square: {chi_square:.4f}', 0, 1)
+        pdf.cell(0, 6, f'Degrees of Freedom: {df_degrees}', 0, 1)
+        pdf.cell(0, 6, f'p-value: {p_value:.4f}', 0, 1)
+        fit_text = 'Good fit (p > 0.05)' if p_value >= 0.05 else 'Poor fit (p < 0.05)'
+        pdf.cell(0, 6, f'Interpretation: {fit_text}', 0, 1)
+        pdf.ln(5)
     
     # Model Parameters
-    pdf.set_font('Arial', 'B', 14)
-    pdf.cell(0, 10, 'Model Parameters', 0, 1)
-    pdf.set_font('Arial', '', 11)
-    pdf.cell(0, 6, f'Intercept: {result.params[0]:.4f} (SE: {result.bse[0]:.4f})', 0, 1)
-    pdf.cell(0, 6, f'Slope: {result.params[1]:.4f} (SE: {result.bse[1]:.4f})', 0, 1)
-    pdf.ln(10)
+    if options.get('include_parameters', True):
+        pdf.set_font('Arial', 'B', 14)
+        pdf.cell(0, 10, 'Model Parameters', 0, 1)
+        pdf.set_font('Arial', '', 11)
+        pdf.cell(0, 6, f'Intercept: {result.params[0]:.4f} (SE: {result.bse[0]:.4f})', 0, 1)
+        pdf.cell(0, 6, f'Slope: {result.params[1]:.4f} (SE: {result.bse[1]:.4f})', 0, 1)
+        pdf.ln(10)
     
-    # Add plots
-    pdf.add_page()
+    # Add plots on separate pages (if any are selected)
+    if options.get('include_mortality_plot', True) or options.get('include_probit_plot', True):
+        pdf.add_page()
     
     # Mortality curve
-    pdf.set_font('Arial', 'B', 14)
-    pdf.cell(0, 10, 'Mortality Curve', 0, 1)
-    pdf.ln(2)
-    
-    with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as tmpfile:
-        fig = create_mortality_plot(df_processed, result, strain, chemical)
-        fig.savefig(tmpfile.name, format='png', dpi=150, bbox_inches='tight')
-        plt.close(fig)
-        pdf.image(tmpfile.name, x=10, w=190)
-        os.unlink(tmpfile.name)
-    
-    pdf.ln(5)
+    if options.get('include_mortality_plot', True):
+        pdf.set_font('Arial', 'B', 14)
+        pdf.cell(0, 10, 'Mortality Curve', 0, 1)
+        pdf.ln(2)
+        
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as tmpfile:
+            fig = create_mortality_plot(df_processed, result, strain, chemical)
+            fig.savefig(tmpfile.name, format='png', dpi=150, bbox_inches='tight')
+            plt.close(fig)
+            pdf.image(tmpfile.name, x=10, w=190)
+            os.unlink(tmpfile.name)
+        
+        pdf.ln(5)
     
     # Probit plot
-    pdf.add_page()
-    pdf.set_font('Arial', 'B', 14)
-    pdf.cell(0, 10, 'Probit Regression Line', 0, 1)
-    pdf.ln(2)
-    
-    with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as tmpfile:
-        fig = create_probit_plot(df_processed, result, strain, chemical)
-        fig.savefig(tmpfile.name, format='png', dpi=150, bbox_inches='tight')
-        plt.close(fig)
-        pdf.image(tmpfile.name, x=10, w=190)
-        os.unlink(tmpfile.name)
+    if options.get('include_probit_plot', True):
+        # Add new page if mortality plot was included, otherwise use current page
+        if options.get('include_mortality_plot', True):
+            pdf.add_page()
+        
+        pdf.set_font('Arial', 'B', 14)
+        pdf.cell(0, 10, 'Probit Regression Line', 0, 1)
+        pdf.ln(2)
+        
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as tmpfile:
+            fig = create_probit_plot(df_processed, result, strain, chemical)
+            fig.savefig(tmpfile.name, format='png', dpi=150, bbox_inches='tight')
+            plt.close(fig)
+            pdf.image(tmpfile.name, x=10, w=190)
+            os.unlink(tmpfile.name)
     
     return pdf
 
@@ -602,8 +702,27 @@ def create_pdf_comparison(df1, result1, chi_sq1, df_deg1, p_val1, strain1, chemi
 
 def create_pdf_comparison_with_plots(df1, df1_processed, result1, chi_sq1, df_deg1, p_val1, strain1, chemical1,
                                      df2, df2_processed, result2, chi_sq2, df_deg2, p_val2, strain2, chemical2,
-                                     resistance_ratio, rr_lower, rr_upper, p_parallel, p_equality):
-    """Create PDF report with plots for two-dataset comparison"""
+                                     resistance_ratio, rr_lower, rr_upper, p_parallel, p_equality, options=None):
+    """Create PDF report with plots for two-dataset comparison
+    
+    Args:
+        options: Dict with boolean flags for what to include in PDF
+                Keys: include_raw_data, include_rr, include_ld_comparison,
+                      include_statistical_tests, include_model_fit,
+                      include_mortality_plot, include_probit_plot
+    """
+    # Default options - include everything
+    if options is None:
+        options = {
+            'include_raw_data': True,
+            'include_rr': True,
+            'include_ld_comparison': True,
+            'include_statistical_tests': True,
+            'include_model_fit': True,
+            'include_mortality_plot': True,
+            'include_probit_plot': True
+        }
+    
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
@@ -621,53 +740,55 @@ def create_pdf_comparison_with_plots(df1, df1_processed, result1, chi_sq1, df_de
     pdf.ln(5)
     
     # Raw Data Tables
-    pdf.set_font('Arial', 'B', 14)
-    pdf.cell(0, 10, 'Raw Data - Dataset 1', 0, 1)
-    pdf.set_font('Arial', 'B', 9)
-    pdf.cell(40, 6, 'Concentration', 1)
-    pdf.cell(30, 6, 'N Tested', 1)
-    pdf.cell(30, 6, 'Mortality', 1)
-    pdf.cell(40, 6, 'Mortality %', 1)
-    pdf.ln()
-    
-    pdf.set_font('Arial', '', 9)
-    for idx, row in df1.iterrows():
-        mort_pct = (row['mortality'] / row['n']) * 100
-        pdf.cell(40, 5, f"{row['concentration']:.6f}", 1)
-        pdf.cell(30, 5, f"{int(row['n'])}", 1)
-        pdf.cell(30, 5, f"{int(row['mortality'])}", 1)
-        pdf.cell(40, 5, f"{mort_pct:.2f}%", 1)
+    if options.get('include_raw_data', True):
+        pdf.set_font('Arial', 'B', 14)
+        pdf.cell(0, 10, 'Raw Data - Dataset 1', 0, 1)
+        pdf.set_font('Arial', 'B', 9)
+        pdf.cell(40, 6, 'Concentration', 1)
+        pdf.cell(30, 6, 'N Tested', 1)
+        pdf.cell(30, 6, 'Mortality', 1)
+        pdf.cell(40, 6, 'Mortality %', 1)
         pdf.ln()
-    pdf.ln(5)
-    
-    pdf.set_font('Arial', 'B', 14)
-    pdf.cell(0, 10, 'Raw Data - Dataset 2', 0, 1)
-    pdf.set_font('Arial', 'B', 9)
-    pdf.cell(40, 6, 'Concentration', 1)
-    pdf.cell(30, 6, 'N Tested', 1)
-    pdf.cell(30, 6, 'Mortality', 1)
-    pdf.cell(40, 6, 'Mortality %', 1)
-    pdf.ln()
-    
-    pdf.set_font('Arial', '', 9)
-    for idx, row in df2.iterrows():
-        mort_pct = (row['mortality'] / row['n']) * 100
-        pdf.cell(40, 5, f"{row['concentration']:.6f}", 1)
-        pdf.cell(30, 5, f"{int(row['n'])}", 1)
-        pdf.cell(30, 5, f"{int(row['mortality'])}", 1)
-        pdf.cell(40, 5, f"{mort_pct:.2f}%", 1)
+        
+        pdf.set_font('Arial', '', 9)
+        for idx, row in df1.iterrows():
+            mort_pct = (row['mortality'] / row['n']) * 100
+            pdf.cell(40, 5, f"{row['concentration']:.6f}", 1)
+            pdf.cell(30, 5, f"{int(row['n'])}", 1)
+            pdf.cell(30, 5, f"{int(row['mortality'])}", 1)
+            pdf.cell(40, 5, f"{mort_pct:.2f}%", 1)
+            pdf.ln()
+        pdf.ln(5)
+        
+        pdf.set_font('Arial', 'B', 14)
+        pdf.cell(0, 10, 'Raw Data - Dataset 2', 0, 1)
+        pdf.set_font('Arial', 'B', 9)
+        pdf.cell(40, 6, 'Concentration', 1)
+        pdf.cell(30, 6, 'N Tested', 1)
+        pdf.cell(30, 6, 'Mortality', 1)
+        pdf.cell(40, 6, 'Mortality %', 1)
         pdf.ln()
-    pdf.ln(5)
+        
+        pdf.set_font('Arial', '', 9)
+        for idx, row in df2.iterrows():
+            mort_pct = (row['mortality'] / row['n']) * 100
+            pdf.cell(40, 5, f"{row['concentration']:.6f}", 1)
+            pdf.cell(30, 5, f"{int(row['n'])}", 1)
+            pdf.cell(30, 5, f"{int(row['mortality'])}", 1)
+            pdf.cell(40, 5, f"{mort_pct:.2f}%", 1)
+            pdf.ln()
+        pdf.ln(5)
     
     # Resistance Ratio
-    pdf.set_font('Arial', 'B', 14)
-    pdf.cell(0, 10, 'Resistance Ratio (LD50 Basis)', 0, 1)
-    pdf.set_font('Arial', '', 11)
-    pdf.cell(0, 6, f'Ratio: {resistance_ratio:.2f}x', 0, 1)
-    pdf.cell(0, 6, f'95% Confidence Interval: ({rr_lower:.2f} - {rr_upper:.2f})', 0, 1)
-    interpretation = f'{strain1} is {resistance_ratio:.2f}x {"more resistant" if resistance_ratio > 1 else "more susceptible"} than {strain2}'
-    pdf.multi_cell(0, 6, f'Interpretation: {interpretation}')
-    pdf.ln(5)
+    if options.get('include_rr', True):
+        pdf.set_font('Arial', 'B', 14)
+        pdf.cell(0, 10, 'Resistance Ratio (LD50 Basis)', 0, 1)
+        pdf.set_font('Arial', '', 11)
+        pdf.cell(0, 6, f'Ratio: {resistance_ratio:.2f}x', 0, 1)
+        pdf.cell(0, 6, f'95% Confidence Interval: ({rr_lower:.2f} - {rr_upper:.2f})', 0, 1)
+        interpretation = f'{strain1} is {resistance_ratio:.2f}x {"more resistant" if resistance_ratio > 1 else "more susceptible"} than {strain2}'
+        pdf.multi_cell(0, 6, f'Interpretation: {interpretation}')
+        pdf.ln(5)
     
     # LD Estimates Comparison
     pdf.set_font('Arial', 'B', 14)
@@ -822,7 +943,7 @@ def fig_to_base64(fig):
 def main():
     # Header
     st.markdown('<div class="main-header">📊 Probit Analysis Tool</div>', unsafe_allow_html=True)
-    st.markdown("**Web Version 10.2** - Professional bioassay analysis in your browser")
+    st.markdown("**Web Version 10.3** - Professional bioassay analysis in your browser")
     
     # Sidebar
     with st.sidebar:
@@ -853,8 +974,10 @@ def main():
         
         st.markdown("---")
         st.markdown("### ℹ️ About")
-        st.markdown("Version 10.2 Web")
+        st.markdown("**Version 10.3 Web**")
         st.markdown("Probit regression analysis for bioassay data")
+        st.markdown("USDA ARS Cattle Fever Tick Research Unit")
+        st.markdown("Edinburg, TX, USA")
     
     # Main content
     tabs = st.tabs(["📁 Upload Data", "📊 Single Analysis", "⚖️ Compare Two Datasets", "📖 Help"])
@@ -876,6 +999,14 @@ def main():
                     lines = content.split('\n')
                     strain1 = lines[0].strip()
                     chemical1 = lines[1].strip()
+                    
+                    # IMPROVEMENT: Validate strain and chemical names
+                    if not strain1:
+                        st.warning("⚠️ Strain name is empty - using 'Unknown Strain'")
+                        strain1 = "Unknown Strain"
+                    if not chemical1:
+                        st.warning("⚠️ Chemical name is empty - using 'Unknown Chemical'")
+                        chemical1 = "Unknown Chemical"
                     
                     # Read data
                     df1 = pd.read_csv(StringIO(content), sep='\t', skiprows=2)
@@ -925,6 +1056,14 @@ def main():
                     strain2 = lines[0].strip()
                     chemical2 = lines[1].strip()
                     
+                    # IMPROVEMENT: Validate strain and chemical names
+                    if not strain2:
+                        st.warning("⚠️ Strain name is empty - using 'Unknown Strain'")
+                        strain2 = "Unknown Strain"
+                    if not chemical2:
+                        st.warning("⚠️ Chemical name is empty - using 'Unknown Chemical'")
+                        chemical2 = "Unknown Chemical"
+                    
                     # Read data
                     df2 = pd.read_csv(StringIO(content), sep='\t', skiprows=2)
                     
@@ -958,6 +1097,26 @@ def main():
                     st.session_state.chemical2 = chemical2
                     st.session_state.errors2 = errors
                     
+                    # Ask about reference type
+                    st.markdown("---")
+                    reference_type = st.selectbox(
+                        "📋 What does Dataset 2 represent?",
+                        [
+                            "Susceptible reference strain (standard resistance test)",
+                            "Previous generation/timepoint (monitoring resistance changes)",
+                            "Different treatment/condition (experimental comparison)",
+                            "Another strain (no assumption about susceptibility)"
+                        ],
+                        key="reference_type",
+                        help="This determines how resistance ratios are interpreted"
+                    )
+                    # No need to manually assign - Streamlit does this automatically with key="reference_type"
+                    
+                    if reference_type.startswith("Susceptible"):
+                        st.info("💡 Results will include resistance classification (RR ≥ 2.0 = resistant)")
+                    else:
+                        st.info("💡 Results will show relative comparison without resistance classification")
+                    
                 except Exception as e:
                     st.error(f"❌ Error reading file: {str(e)}")
     
@@ -980,8 +1139,28 @@ def main():
                         # Preprocess
                         df_processed = preprocess_data(df)
                         
+                        if len(df_processed) == 0:
+                            st.error("❌ No valid data remaining after preprocessing. Check your data.")
+                            st.stop()
+                        
                         # Fit model
                         result, chi_square, df_degrees, p_value = fit_probit_model(df_processed)
+                        
+                    except (ValueError, RuntimeError) as e:
+                        st.error("❌ Analysis failed:")
+                        st.error(str(e))
+                        st.error("\n**Troubleshooting Tips:**")
+                        st.error("• Check that concentrations span mortality range from ~10% to ~90%")
+                        st.error("• Ensure you have at least 3-4 different concentrations")
+                        st.error("• Verify mortality counts don't exceed sample sizes")
+                        st.error("• Consider adding more replicates if variability is high")
+                        st.stop()
+                    except Exception as e:
+                        st.error(f"❌ Unexpected error during analysis: {str(e)}")
+                        st.exception(e)
+                        st.stop()
+                    
+                    try:
                         
                         # Data Summary
                         st.markdown("### 📋 Data Summary")
@@ -998,16 +1177,22 @@ def main():
                         
                         # LD Estimates
                         st.markdown("### 💊 Lethal Dose Estimates")
-                        ld_data = []
-                        for ld_level in LD_LEVELS:
-                            ld, lower, upper = compute_ldx_with_ci(result, ld_level)
-                            ld_data.append({
-                                'LD Level': f'LD{ld_level}',
-                                'Estimate': f'{ld:.6f}',
-                                '95% CI Lower': f'{lower:.6f}',
-                                '95% CI Upper': f'{upper:.6f}'
-                            })
-                        st.table(pd.DataFrame(ld_data))
+                        try:
+                            ld_data = []
+                            for ld_level in LD_LEVELS:
+                                ld, lower, upper = compute_ldx_with_ci(result, ld_level)
+                                ld_data.append({
+                                    'LD Level': f'LD{ld_level}',
+                                    'Estimate': f'{ld:.6f}',
+                                    '95% CI Lower': f'{lower:.6f}',
+                                    '95% CI Upper': f'{upper:.6f}'
+                                })
+                            st.table(pd.DataFrame(ld_data))
+                        except ValueError as e:
+                            st.error("❌ Error calculating LD estimates:")
+                            st.error(str(e))
+                            st.error("Analysis cannot continue with invalid LD estimates.")
+                            st.stop()
                         
                         # Model Fit
                         st.markdown("### 📈 Model Fit")
@@ -1066,7 +1251,43 @@ def main():
                         
                         # Generate PDF Report
                         st.markdown("### 📄 Download Report")
-                        pdf = create_pdf_single_with_plots(df, df_processed, result, chi_square, df_degrees, p_value, strain, chemical)
+                        
+                        # PDF customization options
+                        with st.expander("⚙️ Customize PDF Report", expanded=False):
+                            st.markdown("**Select what to include in the PDF:**")
+                            
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                include_data_summary = st.checkbox("Data Summary", value=True, 
+                                    help="Observations, total tested, mortality")
+                                include_raw_data = st.checkbox("Raw Data Table", value=True,
+                                    help="Table of all concentrations and mortality")
+                                include_ld_estimates = st.checkbox("LD Estimates", value=True,
+                                    help="LD1, LD50, LD99 with confidence intervals")
+                                include_model_fit = st.checkbox("Model Fit Statistics", value=True,
+                                    help="Chi-square, p-value, goodness of fit")
+                            
+                            with col2:
+                                include_parameters = st.checkbox("Model Parameters", value=True,
+                                    help="Intercept and slope with standard errors")
+                                include_mortality_plot = st.checkbox("Mortality Curve Plot", value=True,
+                                    help="Observed vs. fitted mortality curve")
+                                include_probit_plot = st.checkbox("Probit Regression Plot", value=True,
+                                    help="Probit transformation with fitted line")
+                        
+                        # Create customized PDF
+                        pdf_options = {
+                            'include_data_summary': include_data_summary,
+                            'include_raw_data': include_raw_data,
+                            'include_ld_estimates': include_ld_estimates,
+                            'include_model_fit': include_model_fit,
+                            'include_parameters': include_parameters,
+                            'include_mortality_plot': include_mortality_plot,
+                            'include_probit_plot': include_probit_plot
+                        }
+                        
+                        pdf = create_pdf_single_with_plots(df, df_processed, result, chi_square, df_degrees, p_value, 
+                                                          strain, chemical, options=pdf_options)
                         
                         # Save PDF to bytes
                         pdf_output = BytesIO()
@@ -1107,6 +1328,11 @@ def main():
             strain2 = st.session_state.strain2
             chemical2 = st.session_state.chemical2
             
+            # Get reference type (default to susceptible if not set)
+            reference_type = st.session_state.get('reference_type', 
+                                                  'Susceptible reference strain (standard resistance test)')
+            is_susceptible_reference = reference_type.startswith("Susceptible")
+            
             if st.button("🚀 Run Comparison", type="primary", use_container_width=True):
                 with st.spinner("Comparing datasets..."):
                     try:
@@ -1114,9 +1340,31 @@ def main():
                         df1_processed = preprocess_data(df1)
                         df2_processed = preprocess_data(df2)
                         
-                        # Fit both models
-                        result1, chi_sq1, df_deg1, p_val1 = fit_probit_model(df1_processed)
-                        result2, chi_sq2, df_deg2, p_val2 = fit_probit_model(df2_processed)
+                        if len(df1_processed) == 0 or len(df2_processed) == 0:
+                            st.error("❌ No valid data remaining after preprocessing. Check your data.")
+                            st.stop()
+                        
+                        # Fit models with error handling
+                        try:
+                            result1, chi_sq1, df_deg1, p_val1 = fit_probit_model(df1_processed)
+                        except (ValueError, RuntimeError) as e:
+                            st.error(f"❌ Model fitting failed for {strain1}:")
+                            st.error(str(e))
+                            st.stop()
+                        
+                        try:
+                            result2, chi_sq2, df_deg2, p_val2 = fit_probit_model(df2_processed)
+                        except (ValueError, RuntimeError) as e:
+                            st.error(f"❌ Model fitting failed for {strain2}:")
+                            st.error(str(e))
+                            st.stop()
+                        
+                    except Exception as e:
+                        st.error(f"❌ Unexpected error during model fitting: {str(e)}")
+                        st.exception(e)
+                        st.stop()
+                    
+                    try:
                         
                         # Side-by-side data summary
                         st.markdown("### 📋 Data Summary Comparison")
@@ -1138,21 +1386,73 @@ def main():
                             overall_mort2 = (df2['mortality'].sum() / df2['n'].sum() * 100)
                             st.metric("Overall Mortality", f"{overall_mort2:.1f}%")
                         
-                        # Compute LD50 for both
-                        ld50_1, ld50_1_lower, ld50_1_upper = compute_ldx_with_ci(result1, 50)
-                        ld50_2, ld50_2_lower, ld50_2_upper = compute_ldx_with_ci(result2, 50)
+                        # Compute LD50 for both with error handling
+                        try:
+                            ld50_1, ld50_1_lower, ld50_1_upper = compute_ldx_with_ci(result1, 50)
+                            ld50_2, ld50_2_lower, ld50_2_upper = compute_ldx_with_ci(result2, 50)
+                        except ValueError as e:
+                            st.error(f"❌ Error computing LD50 values: {str(e)}")
+                            st.error("Cannot proceed with resistance ratio calculation.")
+                            st.stop()
                         
-                        # Resistance ratio
+                        # CRITICAL FIX: Validate LD50 values before resistance ratio calculation
+                        if not (np.isfinite(ld50_1) and np.isfinite(ld50_2) and ld50_1 > 0 and ld50_2 > 0):
+                            st.error("❌ Invalid LD50 values detected:")
+                            st.error(f"  • {strain1} LD50: {ld50_1}")
+                            st.error(f"  • {strain2} LD50: {ld50_2}")
+                            st.error("This may indicate:")
+                            st.error("  • Model fitting problems")
+                            st.error("  • Extreme resistance levels")
+                            st.error("  • Poor data quality")
+                            st.error("Cannot calculate resistance ratio.")
+                            st.stop()
+                        
+                        # CRITICAL FIX: Check for division by zero
+                        if ld50_2 == 0:
+                            st.error("❌ Reference strain LD50 is zero - cannot calculate resistance ratio.")
+                            st.stop()
+                        
+                        # Resistance ratio calculation
                         resistance_ratio = ld50_1 / ld50_2
                         
+                        # CRITICAL FIX: Validate resistance ratio
+                        if not np.isfinite(resistance_ratio) or resistance_ratio <= 0:
+                            st.error("❌ Invalid resistance ratio calculated:")
+                            st.error(f"  • Resistance ratio: {resistance_ratio}")
+                            st.error(f"  • LD50 ratio: {ld50_1} / {ld50_2}")
+                            st.error("Check LD50 estimates and model parameters.")
+                            st.stop()
+                        
                         # Resistance ratio confidence interval (Fieller's method approximation)
-                        log_rr = np.log(resistance_ratio)
-                        se_log_rr = np.sqrt(
-                            (result1.bse[0]**2 + result1.bse[1]**2 * (norm.ppf(0.5) - result1.params[0])**2 / result1.params[1]**2) / ld50_1**2 +
-                            (result2.bse[0]**2 + result2.bse[1]**2 * (norm.ppf(0.5) - result2.params[0])**2 / result2.params[1]**2) / ld50_2**2
-                        )
-                        rr_lower = np.exp(log_rr - 1.96 * se_log_rr)
-                        rr_upper = np.exp(log_rr + 1.96 * se_log_rr)
+                        try:
+                            log_rr = np.log(resistance_ratio)
+                            se_log_rr = np.sqrt(
+                                (result1.bse[0]**2 + result1.bse[1]**2 * (norm.ppf(0.5) - result1.params[0])**2 / result1.params[1]**2) / ld50_1**2 +
+                                (result2.bse[0]**2 + result2.bse[1]**2 * (norm.ppf(0.5) - result2.params[0])**2 / result2.params[1]**2) / ld50_2**2
+                            )
+                            
+                            # CRITICAL FIX: Validate confidence interval calculation
+                            if not np.isfinite(se_log_rr) or se_log_rr <= 0:
+                                st.warning("⚠️ Could not calculate reliable confidence intervals for resistance ratio.")
+                                st.warning("Using point estimate only.")
+                                rr_lower = resistance_ratio * 0.5  # Rough approximation
+                                rr_upper = resistance_ratio * 2.0  
+                            else:
+                                rr_lower = np.exp(log_rr - 1.96 * se_log_rr)
+                                rr_upper = np.exp(log_rr + 1.96 * se_log_rr)
+                                
+                                # Validate bounds
+                                if not (np.isfinite(rr_lower) and np.isfinite(rr_upper) and rr_lower > 0 and rr_upper > 0):
+                                    st.warning("⚠️ Confidence interval calculation produced invalid bounds.")
+                                    st.warning("Using point estimate only.")
+                                    rr_lower = resistance_ratio * 0.5
+                                    rr_upper = resistance_ratio * 2.0
+                                    
+                        except Exception as e:
+                            st.warning(f"⚠️ Error in confidence interval calculation: {str(e)}")
+                            st.warning("Using point estimate only.")
+                            rr_lower = resistance_ratio * 0.5
+                            rr_upper = resistance_ratio * 2.0
                         
                         # LD Estimates Comparison
                         st.markdown("### 💊 Lethal Dose Comparison")
@@ -1201,6 +1501,7 @@ def main():
                         
                         with col1:
                             st.markdown("**Parallelism Test**")
+                            st.caption("*Z-test for equality of slopes (Robertson et al., 2007)*")
                             st.metric("Z-statistic", f"{z_parallel:.4f}")
                             st.metric("p-value", f"{p_parallel:.4f}")
                             if p_parallel > 0.05:
@@ -1221,6 +1522,7 @@ def main():
                         
                         with col2:
                             st.markdown("**Equality Test**")
+                            st.caption("*Z-test for equality of intercepts*")
                             st.metric("Z-statistic", f"{z_equality:.4f}")
                             st.metric("p-value", f"{p_equality:.4f}")
                             if p_equality > 0.05:
@@ -1338,39 +1640,175 @@ def main():
                         # Summary interpretation
                         st.markdown("### 📝 Summary Interpretation")
                         
-                        interpretation = f"""
-                        **Key Findings:**
+                        # Determine resistance status based on reference type
+                        ci_includes_one = (rr_lower <= 1.0 <= rr_upper)
+                        biologically_significant = (resistance_ratio >= 2.0 or resistance_ratio <= 0.5)
                         
-                        1. **Resistance Level:** {strain1} shows {resistance_ratio:.2f}-fold {'resistance' if resistance_ratio > 1 else 'susceptibility'} 
-                           compared to {strain2} (95% CI: {rr_lower:.2f} - {rr_upper:.2f})
+                        # Check for extremely wide CI (indicates unreliable estimate)
+                        ci_width = rr_upper - rr_lower
+                        ci_is_unreliable = (ci_width > 1000) or (rr_upper > 1000000) or (rr_lower < 0.001)
                         
-                        2. **Statistical Significance:** The difference between strains is 
-                           {'statistically significant (p < 0.05)' if p_equality < 0.05 else 'not statistically significant (p > 0.05)'}
+                        # Check for extreme RR values
+                        extreme_resistance = resistance_ratio >= 10.0
+                        extreme_susceptibility = resistance_ratio <= 0.1
                         
-                        3. **Dose-Response Relationship:** The regression lines are 
-                           {'parallel (p > 0.05)' if p_parallel > 0.05 else 'not parallel (p < 0.05)'}, 
-                           {'indicating similar modes of action' if p_parallel > 0.05 else 'suggesting different mechanisms may be involved'}
-                        
-                        4. **Model Quality:** 
-                           - {strain1}: {'Good fit (p > 0.05)' if p_val1 >= 0.05 else f'Poor fit (p = {p_val1:.4f}) - check variability'}
-                           - {strain2}: {'Good fit (p > 0.05)' if p_val2 >= 0.05 else f'Poor fit (p = {p_val2:.4f}) - check variability'}
-                        
-                        **For Publication:**
-                        
-                        "{strain1} exhibited {resistance_ratio:.2f}-fold resistance to {chemical1} compared to {strain2} 
-                        (LD50: {ld50_1:.3f} vs {ld50_2:.3f}, RR = {resistance_ratio:.2f}, 95% CI: {rr_lower:.2f}-{rr_upper:.2f}). 
-                        {'The dose-response curves were parallel (p > 0.05), indicating similar modes of action.' if p_parallel > 0.05 else 
-                        'The dose-response curves showed significantly different slopes (p < 0.05), suggesting potential mechanistic differences.'}"
-                        """
+                        if is_susceptible_reference:
+                            # Standard resistance classification with improved logic
+                            if extreme_resistance:
+                                # Very high RR overrides CI uncertainty
+                                resistance_status = f"{resistance_ratio:.2f}-fold resistance"
+                                resistance_classification = "highly resistant"
+                                ci_note = f'- **Note:** CI is very wide ({rr_lower:.2f} - {rr_upper:.2f}), indicating high uncertainty in the exact value, but resistance level is clearly high' if ci_is_unreliable else ''
+                            elif extreme_susceptibility:
+                                # Very low RR overrides CI uncertainty  
+                                resistance_status = f"{resistance_ratio:.2f}-fold increased susceptibility"
+                                resistance_classification = "highly susceptible"
+                                ci_note = f'- **Note:** CI is very wide ({rr_lower:.2f} - {rr_upper:.2f}), indicating high uncertainty in the exact value, but susceptibility is clearly high' if ci_is_unreliable else ''
+                            elif ci_includes_one and not ci_is_unreliable:
+                                # Normal CI that includes 1.0 and is reliable
+                                resistance_status = f"no significant difference from {strain2}"
+                                resistance_classification = "similar susceptibility"
+                                ci_note = f'- **Note:** CI includes 1.0, indicating no statistically significant difference'
+                            elif ci_includes_one and ci_is_unreliable:
+                                # Unreliable CI that includes 1.0 - use RR magnitude
+                                if biologically_significant:
+                                    if resistance_ratio > 1:
+                                        resistance_status = f"{resistance_ratio:.2f}-fold resistance (CI unreliable)"
+                                        resistance_classification = "resistant"
+                                    else:
+                                        resistance_status = f"{resistance_ratio:.2f}-fold increased susceptibility (CI unreliable)"
+                                        resistance_classification = "more susceptible"
+                                    ci_note = f'- **Note:** CI is extremely wide ({rr_lower:.2f} - {rr_upper:.2f}) and unreliable. Interpretation based on RR point estimate.'
+                                else:
+                                    resistance_status = f"uncertain - CI too wide for reliable interpretation"
+                                    resistance_classification = "uncertain"
+                                    ci_note = f'- **Note:** CI is extremely wide ({rr_lower:.2f} - {rr_upper:.2f}). Consider additional replicates for reliable estimate.'
+                            elif not biologically_significant:
+                                # Statistically significant but small effect
+                                if resistance_ratio > 1:
+                                    resistance_status = f"statistically different but low-level resistance ({resistance_ratio:.2f}-fold)"
+                                    resistance_classification = "low-level resistance (RR < 2)"
+                                else:
+                                    resistance_status = f"statistically different but similar susceptibility ({resistance_ratio:.2f}-fold)"
+                                    resistance_classification = "similar to susceptible"
+                                ci_note = f'- **Note:** RR < 2, indicating low-level or no practical resistance'
+                            else:
+                                # Clear biological significance with reliable CI
+                                if resistance_ratio > 1:
+                                    resistance_status = f"{resistance_ratio:.2f}-fold resistance"
+                                    resistance_classification = "resistant"
+                                else:
+                                    resistance_status = f"{resistance_ratio:.2f}-fold increased susceptibility"
+                                    resistance_classification = "more susceptible"
+                                ci_note = ''
+                            
+                            interpretation = f"""
+                            **Comparison Type:** Resistance test against susceptible reference
+                            
+                            **Key Findings:**
+                            
+                            1. **Resistance Level:** {strain1} shows {resistance_status} 
+                               compared to {strain2} (RR = {resistance_ratio:.2f}, 95% CI: {rr_lower:.2f} - {rr_upper:.2f})
+                               {ci_note}
+                            
+                            2. **Statistical Significance:** The difference between strains is 
+                               {'statistically significant (p < 0.05)' if p_equality < 0.05 else 'not statistically significant (p > 0.05)'}
+                            
+                            3. **Dose-Response Relationship:** The regression lines are 
+                               {'parallel (p > 0.05)' if p_parallel > 0.05 else 'not parallel (p < 0.05)'}, 
+                               {'indicating similar modes of action' if p_parallel > 0.05 else 'suggesting different mechanisms may be involved (Robertson et al., 2007)'}
+                            
+                            4. **Model Quality:** 
+                               - {strain1}: {'Good fit (p > 0.05)' if p_val1 >= 0.05 else f'Poor fit (p = {p_val1:.4f}) - check variability'}
+                               - {strain2}: {'Good fit (p > 0.05)' if p_val2 >= 0.05 else f'Poor fit (p = {p_val2:.4f}) - check variability'}
+                            
+                            **For Publication:**
+                            
+                            {f'{strain1} showed no significant difference in susceptibility to {chemical1} compared to {strain2} (LD50: {ld50_1:.3f} vs {ld50_2:.3f}, RR = {resistance_ratio:.2f}, 95% CI: {rr_lower:.2f}-{rr_upper:.2f}).' if (ci_includes_one and not ci_is_unreliable and not extreme_resistance and not extreme_susceptibility) else
+                             f'{strain1} exhibited {resistance_ratio:.2f}-fold resistance to {chemical1} compared to {strain2} (LD50: {ld50_1:.3f} vs {ld50_2:.3f}, RR = {resistance_ratio:.2f}, 95% CI: {rr_lower:.2f}-{rr_upper:.2f}){", though confidence intervals are very wide indicating high uncertainty" if ci_is_unreliable else ""}.' if resistance_ratio > 1 else
+                             f'{strain1} exhibited {resistance_ratio:.2f}-fold increased susceptibility to {chemical1} compared to {strain2} (LD50: {ld50_1:.3f} vs {ld50_2:.3f}, RR = {resistance_ratio:.2f}, 95% CI: {rr_lower:.2f}-{rr_upper:.2f}){", though confidence intervals are very wide indicating high uncertainty" if ci_is_unreliable else ""}.'}
+                            {'The dose-response curves were parallel (p > 0.05), indicating similar modes of action.' if p_parallel > 0.05 else 
+                            'The dose-response curves showed significantly different slopes (p < 0.05), suggesting potential mechanistic differences.'}"
+                            """
+                        else:
+                            # Relative comparison without resistance classification
+                            comparison_direction = "higher" if resistance_ratio > 1 else "lower"
+                            percent_change = abs((resistance_ratio - 1.0) * 100)
+                            
+                            interpretation = f"""
+                            **Comparison Type:** {reference_type}
+                            
+                            **Key Findings:**
+                            
+                            1. **Relative Difference:** {strain1} has {resistance_ratio:.2f}-fold {comparison_direction} LD50 than {strain2}
+                               (LD50: {ld50_1:.3f} vs {ld50_2:.3f}, RR = {resistance_ratio:.2f}, 95% CI: {rr_lower:.2f} - {rr_upper:.2f})
+                               - This represents a {percent_change:.1f}% {'increase' if resistance_ratio > 1 else 'decrease'} in LD50
+                               {f'- **Note:** CI includes 1.0, indicating no statistically significant difference' if ci_includes_one else ''}
+                               {f'- **Note:** CI excludes 1.0, indicating a statistically significant difference' if not ci_includes_one else ''}
+                            
+                            2. **Statistical Significance:** The difference between datasets is 
+                               {'statistically significant (p < 0.05)' if p_equality < 0.05 else 'not statistically significant (p > 0.05)'}
+                            
+                            3. **Dose-Response Relationship:** The regression lines are 
+                               {'parallel (p > 0.05)' if p_parallel > 0.05 else 'not parallel (p < 0.05)'}, 
+                               {'indicating similar response patterns' if p_parallel > 0.05 else 'suggesting different response patterns (Robertson et al., 2007)'}
+                            
+                            4. **Model Quality:** 
+                               - {strain1}: {'Good fit (p > 0.05)' if p_val1 >= 0.05 else f'Poor fit (p = {p_val1:.4f}) - check variability'}
+                               - {strain2}: {'Good fit (p > 0.05)' if p_val2 >= 0.05 else f'Poor fit (p = {p_val2:.4f}) - check variability'}
+                            
+                            **For Publication:**
+                            
+                            {f'{strain1} showed no significant difference in susceptibility to {chemical1} compared to {strain2} (LD50: {ld50_1:.3f} vs {ld50_2:.3f}, RR = {resistance_ratio:.2f}, 95% CI: {rr_lower:.2f}-{rr_upper:.2f}).' if ci_includes_one else
+                             f'{strain1} had a {resistance_ratio:.2f}-fold {comparison_direction} LD50 for {chemical1} compared to {strain2} (LD50: {ld50_1:.3f} vs {ld50_2:.3f}, RR = {resistance_ratio:.2f}, 95% CI: {rr_lower:.2f}-{rr_upper:.2f}), representing a {percent_change:.1f}% {"increase" if resistance_ratio > 1 else "decrease"} in tolerance.'}
+                            {'The dose-response curves were parallel (p > 0.05), indicating similar response patterns.' if p_parallel > 0.05 else 
+                            'The dose-response curves showed significantly different slopes (p < 0.05), suggesting different response patterns.'}"
+                            """
                         
                         st.info(interpretation)
                         
                         # Generate PDF Report
                         st.markdown("### 📄 Download Report")
+                        
+                        # PDF customization options for comparison
+                        with st.expander("⚙️ Customize PDF Report", expanded=False):
+                            st.markdown("**Select what to include in the PDF:**")
+                            
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                comp_include_raw_data = st.checkbox("Raw Data Tables", value=True,
+                                    help="Tables for both datasets", key="comp_raw_data")
+                                comp_include_rr = st.checkbox("Resistance Ratio", value=True,
+                                    help="RR with confidence interval", key="comp_rr")
+                                comp_include_ld_comparison = st.checkbox("LD Comparison Table", value=True,
+                                    help="Side-by-side LD estimates", key="comp_ld")
+                                comp_include_statistical_tests = st.checkbox("Statistical Tests", value=True,
+                                    help="Parallelism and equality tests", key="comp_stats")
+                            
+                            with col2:
+                                comp_include_model_fit = st.checkbox("Model Fit Comparison", value=True,
+                                    help="Chi-square for both datasets", key="comp_fit")
+                                comp_include_mortality_plot = st.checkbox("Combined Mortality Plot", value=True,
+                                    help="Both curves on one plot", key="comp_mort_plot")
+                                comp_include_probit_plot = st.checkbox("Combined Probit Plot", value=True,
+                                    help="Both regression lines", key="comp_prob_plot")
+                        
+                        # Create customized comparison PDF
+                        comp_pdf_options = {
+                            'include_raw_data': comp_include_raw_data,
+                            'include_rr': comp_include_rr,
+                            'include_ld_comparison': comp_include_ld_comparison,
+                            'include_statistical_tests': comp_include_statistical_tests,
+                            'include_model_fit': comp_include_model_fit,
+                            'include_mortality_plot': comp_include_mortality_plot,
+                            'include_probit_plot': comp_include_probit_plot
+                        }
+                        
                         pdf = create_pdf_comparison_with_plots(
                             df1, df1_processed, result1, chi_sq1, df_deg1, p_val1, strain1, chemical1,
                             df2, df2_processed, result2, chi_sq2, df_deg2, p_val2, strain2, chemical2,
-                            resistance_ratio, rr_lower, rr_upper, p_parallel, p_equality
+                            resistance_ratio, rr_lower, rr_upper, p_parallel, p_equality,
+                            options=comp_pdf_options
                         )
                         
                         # Save PDF to bytes
@@ -1403,7 +1841,7 @@ def main():
         1. **Upload Data**: Click the 'Upload Data' tab and upload your tab-delimited text file(s)
         2. **Review**: Check that your data loaded correctly and passed validation
         3. **Analyze**: Go to 'Single Analysis' or 'Compare Two Datasets' and click 'Run Analysis'
-        4. **Download**: Download your results as PDF (coming soon!)
+        4. **Download**: Download your results as PDF
         
         ### 📋 Data Format Requirements
         
@@ -1433,21 +1871,40 @@ def main():
         - **Variability**: Replicate variability analysis (CV%)
         - **Plots**: Observed vs. fitted mortality curves
         
-        ### ⚠️ Common Issues
+        ### ⚠️ Common Issues & Solutions
         
+        **"Model did not converge"**
+        - Insufficient concentration spacing (use 4-6 concentrations spanning 10-90% mortality)
+        - Poor concentration selection (too narrow range)
+        - High variability between replicates (check CV% > 20%)
+        - Try logarithmic concentration spacing (e.g., 0.1, 0.3, 1.0, 3.0, 10.0)
+        
+        **"Slope is too close to zero"**
+        - Dose-response curve is flat (all mortalities similar)
+        - Concentration range too narrow
+        - Chemical may be ineffective at tested doses
+        - Try wider concentration range or different chemical concentrations
+        
+        **"Invalid LD50 values detected"**
+        - Model fitting problems due to extreme data
+        - Complete separation (all 0% or 100% mortality)
+        - Numerical instability from poor data quality
+        - Ensure mortality ranges from ~10% to ~90% across concentrations
+
         **"Mortality exceeds sample size"**
         - Check that mortality counts are ≤ n for all rows
         - Example: n=96, mortality=98 is impossible!
-        
+
         **"Model does NOT fit well"**
-        - High variability between replicates
+        - High variability between replicates (p < 0.05)
         - Check CV% in variability table
         - Results are still valid, but confidence intervals may be underestimated
-        
+        - Consider additional replicates to reduce variability
+
         **"High variability (CV% > 20%)"**
         - Some concentrations show inconsistent responses
-        - May indicate experimental issues
-        - Consider additional replicates
+        - May indicate experimental issues or biological variability
+        - Consider additional replicates or review experimental protocol
         
         ### 🌐 Web Version Features
         
@@ -1469,6 +1926,127 @@ def main():
         - Your data is NEVER uploaded to any server
         - Results are computed locally
         - Completely private and secure
+        
+        ### 📊 Statistical Methods
+        
+        #### **Probit Regression**
+        The tool fits a probit regression model using generalized linear models (GLM) with a probit link function:
+        
+        ```
+        Probit(mortality) = β₀ + β₁ × log₁₀(concentration)
+        ```
+        
+        **Reference:** Finney, D.J. (1971). *Probit Analysis*, 3rd ed. Cambridge University Press.
+        
+        #### **LD Estimation**
+        Lethal doses (LD1, LD50, LD99) are estimated from the fitted probit model with 95% confidence intervals 
+        calculated using the delta method—a standard approach for propagating uncertainty from regression parameters 
+        to derived quantities.
+        
+        **Formula:** 
+        ```
+        LDₓ = 10^[(Probit(x) - β₀) / β₁]
+        ```
+        
+        where Probit(x) is the probit value for proportion x (e.g., 0.50 for LD50).
+        
+        **Delta Method:** The confidence intervals account for uncertainty in both β₀ and β₁ using a Taylor series 
+        approximation to propagate their standard errors to the LD estimate.
+        
+        **References:** Finney, D.J. (1971). *Probit Analysis*, 3rd ed. Cambridge University Press; 
+        Ver Hoef, J.M. (2012). Who invented the delta method? *The American Statistician* 66:124-127.
+        
+        #### **Resistance Ratios**
+        Resistance ratios compare LD50 values between two strains using Fieller's method for confidence intervals:
+        
+        ```
+        RR = LD50(Strain 1) / LD50(Strain 2)
+        ```
+        
+        - **RR > 1:** Strain 1 is more resistant
+        - **RR < 1:** Strain 1 is more susceptible
+        
+        **Reference:** Fieller, E.C. (1940). The biological standardization of insulin. *J. R. Stat. Soc. Suppl.* 7:1-64.
+        
+        #### **Parallelism Test**
+        Tests whether two dose-response curves have equal slopes using a Z-test:
+        
+        ```
+        Z = (slope₁ - slope₂) / √(SE₁² + SE₂²)
+        p-value = 2 × Φ(-|Z|)
+        ```
+        
+        - **p > 0.05:** Slopes are parallel (similar mode of action)
+        - **p < 0.05:** Slopes differ (potentially different mechanisms)
+        
+        **Interpretation:** Parallel slopes suggest both strains respond to the chemical via the same biological 
+        mechanism, just at different dose levels. Non-parallel slopes may indicate different modes of action or 
+        resistance mechanisms.
+        
+        **Reference:** Robertson, J.L., Russell, R.M., Preisler, H.K., and Savin, N.E. (2007). 
+        *Bioassays with Arthropods*, 2nd ed. CRC Press.
+        
+        #### **Equality Test**
+        Tests whether two strains have significantly different susceptibility (different intercepts) using a Z-test:
+        
+        ```
+        Z = (intercept₁ - intercept₂) / √(SE₁² + SE₂²)
+        ```
+        
+        - **p > 0.05:** No significant difference in susceptibility
+        - **p < 0.05:** Significant difference detected
+        
+        #### **Goodness-of-Fit Test**
+        Pearson's chi-square test evaluates how well the model fits the observed data:
+        
+        ```
+        χ² = Σ[(Observed - Expected)² / Expected]
+        ```
+        
+        - **p > 0.05:** Good fit (model adequately describes the data)
+        - **p < 0.05:** Poor fit (high variability or model inadequacy)
+        
+        **Note:** Poor fit doesn't invalidate results but suggests caution with confidence intervals.
+        
+        ### 📝 How to Cite Statistical Methods
+        
+        **Example Methods Section:**
+        
+        "Probit regression analysis was performed using a generalized linear model with probit link function 
+        (Finney, 1971). Lethal dose estimates (LD1, LD50, LD99) and their 95% confidence intervals were calculated 
+        using the delta method (Finney, 1971; Ver Hoef, 2012). Resistance ratios were computed as the ratio of LD50 
+        values with confidence intervals calculated using Fieller's method (Fieller, 1940). Parallelism of dose-response 
+        curves was assessed using a Z-test for equality of slopes (Robertson et al., 2007). Goodness-of-fit was evaluated 
+        using Pearson's chi-square test. Statistical significance was set at α = 0.05."
+        
+        **Tool Citation:**
+        ```
+        Tidwell, J. (2024). Probit Analysis Tool for Bioassay Research. 
+        USDA ARS Cattle Fever Tick Research Unit, Edinburg, TX, USA.
+        Available at: [URL]
+        ```
+        
+        ### 📚 Key References
+        
+        1. **Finney, D.J. (1971).** *Probit Analysis*, 3rd ed. Cambridge University Press.
+           - Classic reference for probit methodology and delta method
+        
+        2. **Robertson, J.L., Russell, R.M., Preisler, H.K., and Savin, N.E. (2007).** 
+           *Bioassays with Arthropods*, 2nd ed. CRC Press.
+           - Comprehensive guide to bioassay analysis with arthropods
+           - Source for parallelism test methodology
+        
+        3. **Fieller, E.C. (1940).** The biological standardization of insulin. 
+           *Journal of the Royal Statistical Society, Supplement* 7:1-64.
+           - Original method for ratio confidence intervals
+        
+        4. **Ver Hoef, J.M. (2012).** Who invented the delta method? 
+           *The American Statistician* 66:124-127.
+           - Historical review and technical details of delta method
+        
+        5. **Abbott, W.S. (1925).** A method of computing the effectiveness of an insecticide. 
+           *Journal of Economic Entomology* 18:265-267.
+           - Abbott's correction for control mortality
         
         ### 💡 Tips
         
