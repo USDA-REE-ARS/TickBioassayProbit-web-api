@@ -453,7 +453,7 @@ The software is provided "as is", without warranty of any kind, express or impli
 
 The use of this software does not constitute an endorsement by USDA-ARS of any commercial product or service.
 
-See [License.txt](LICENSE) file for complete legal details.
+See [License](License.txt) file for complete legal details.
 
 ---
 
