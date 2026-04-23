@@ -364,3 +364,6 @@ concentration	n	mortality
 - CV% (coefficient of variation) per concentration
 - CV% > 20%: High variability (highlighted in red)
 - High CV% may indicate experimental issues
+
+**Security**
+The community is explicitly encouraged to engage in the responsible disclosure of vulnerabilities to promote collaboration and improve code security.
