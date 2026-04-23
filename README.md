@@ -421,7 +421,7 @@ Users can report issues via:
 3. Through Area Office
 
 The community is explicitly encouraged to engage in the responsible disclosure of vulnerabilities to promote collaboration and improve code security.
-
+If vulnerabilities are identified, they will be remedied within 10 days and/or taken down and/or a notification placed on the code warning potential users.
 ---
 
 ## COMPLIANCE & APPROVALS
