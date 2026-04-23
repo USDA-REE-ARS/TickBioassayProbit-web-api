@@ -486,9 +486,9 @@ Additionally, USDA ARS waives copyright and related rights in
 the work worldwide through the CC0 1.0 Universal Public Domain 
 Dedication.
 
-Developed by: Jason Tidwell, Research Entomologist
-USDA ARS Adkisson-Pfrimmer Agricultural Genomics Center
-College Station, TX
+Developed by: Jason Tidwell, Microbiologist
+USDA ARS Cattle Fever Tick Research Unit
+Edinburg, TX
 2024
 ```
 
