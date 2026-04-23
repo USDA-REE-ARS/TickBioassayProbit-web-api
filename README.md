@@ -5,9 +5,9 @@ web-based probit analysis of tick acaricide bioassay data
 
 **Application Name:** Web-Based Probit Analysis Tool for Bioassay Research
 
-**Developer:** Jason Tidwell, Research Entomologist  
-**Institution:** USDA ARS Adkisson-Pfrimmer Agricultural Genomics Center  
-**Location:** College Station, TX  
+**Developer:** Jason Tidwell, Microbiologist 
+**Institution:** USDA ARS Cattle Fever Tick Research Unit  
+**Location:** Edinburg, TX  
 **Date:** December 2024  
 **Version:** 10.3 (Web)
 
