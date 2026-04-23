@@ -365,5 +365,100 @@ concentration	n	mortality
 - CV% > 20%: High variability (highlighted in red)
 - High CV% may indicate experimental issues
 
-**Security**
+## CITATION & ATTRIBUTION
+
+### Public Domain Notice
+```
+USDA Public Domain Notice
+
+This software was developed by the U.S. Department of Agriculture, 
+Agricultural Research Service (USDA ARS). As a work of the United 
+States Government, this software is in the public domain within 
+the United States.
+
+Additionally, USDA ARS waives copyright and related rights in 
+the work worldwide through the CC0 1.0 Universal Public Domain 
+Dedication.
+
+Developed by: Jason Tidwell, Microbiologist
+USDA ARS Cattle Fever Tick Research Unit
+Edinburg, TX
+2024
+```
+
+### Citation for Publications
+```
+Tidwell, J. (2024). Probit Analysis Tool for Bioassay Research 
+(Version 10.3). USDA Agricultural Research Service. 
+Available at: [GitHub URL or Web App URL]
+```
+
+**In Methods Section:**
+"Probit regression analysis was performed using the Probit Analysis 
+Tool v10.3 (Tidwell, 2024; USDA ARS)."
+
+---
+
+## SUPPORT & CONTACT
+
+### Primary Contact
+Jason Tidwell  
+Microbiologist  
+USDA ARS Cattle Fever Tick Research Unit  
+Edinburg, TX  
+Email: [jason.tidwell@usda.gov]
+
+### Documentation
+- GitHub Repository: [https://github.com/USDA-REE-ARS/TickBioassayProbit-web-api/tree/main]
+- User Guide: README.md in repository
+- Deployment Guide: WEB_DEPLOYMENT_GUIDE.md
+- Testing Guide: WEB_APP_TESTING_GUIDE.md
+
+### Reporting Issues
+Users can report issues via:
+1. GitHub Issues (if repository public)
+2. Direct email to contact above
+3. Through Area Office
+
 The community is explicitly encouraged to engage in the responsible disclosure of vulnerabilities to promote collaboration and improve code security.
+
+---
+
+## COMPLIANCE & APPROVALS
+
+### ARS Review Status
+- Submitted for review: [Date]
+- Public release approved: [Pending]
+- Public domain status: Confirmed (U.S. government work)
+
+### Technology Transfer
+- OTT Review: Not required (educational software, no commercial value)
+- Patent Review: Not applicable (implements standard methods)
+- Export Control: Not applicable (no restrictions)
+
+### Open Source
+- License: Public Domain (U.S. government work)
+- No proprietary dependencies
+- All code freely redistributable
+- No usage restrictions
+
+---
+
+## APPENDIX A: FILE MANIFEST
+
+**Core Application:**
+- probit_web_app.py (26 KB) - Main application
+- requirements_web.txt (1 KB) - Dependencies
+
+**Documentation:**
+- README_WEB.md (8 KB) - User guide
+- WEB_DEPLOYMENT_GUIDE.md (15 KB) - Deployment instructions
+- WEB_APP_TESTING_GUIDE.md (9 KB) - Testing procedures
+- PDF_REPORTS_COMPLETE_GUIDE.md (7 KB) - PDF documentation
+- CITATION_GUIDE.md (12 KB) - Citation instructions
+
+**Example Data:**
+- example_dataset1.txt (1 KB) - Yucatan strain
+- example_dataset2.txt (1 KB) - Reference strain
+
+**Total Package Size:** ~80 KB (excluding images)
