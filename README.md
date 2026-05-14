@@ -19,8 +19,8 @@ This tool directly supports the USDA Agricultural Research Service mission by:
 - **Promoting open science** and reproducible research practices
 
 **Developed by:** Jason Tidwell, Microbiologist  
-**Institution:** USDA ARS Adkisson-Pfrimmer Agricultural Genomics Center  
-**Location:** College Station, TX  
+**Institution:** USDA ARS Cattle Fever Tick Research Unit  
+**Location:** Edinburg, TX  
 **Version:** 10.3 (Web Application)
 
 ### Key Problem Solved
@@ -487,8 +487,8 @@ While not required, please consider citing this tool in publications to help tra
 ### Development Team
 **Lead Developer:** Jason Tidwell, Microbiologist  
 **Institution:** USDA Agricultural Research Service  
-**Facility:** Adkisson-Pfrimmer Agricultural Genomics Center  
-**Location:** College Station, TX
+**Facility:** Cattle Fever Tick Research Unit  
+**Location:** Edinburg, TX
 
 ### Special Thanks
 - **USDA-REE** for supporting open science initiatives
