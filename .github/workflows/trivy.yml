@@ -22,7 +22,7 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Trivy FS + Config scan (SARIF)
-        uses: aquasecurity/trivy-action@0.34.2
+        uses: aquasecurity/trivy-action@0.36.0
         with:
           scan-type: fs
           scan-ref: .
@@ -31,11 +31,11 @@ jobs:
           output: trivy-fs.sarif
           severity: HIGH,CRITICAL
           ignore-unfixed: true
-          version: v0.69.3
+          version: v0.70.0
           #exit-code: 1           # <--- This fails the step if HIGH/CRITICAL vulns found. Commented out because in Public Repo we will be able to upload to GH Code Security and will get notification in pull requests.
 
       - name: Upload repo scan artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         #if: ${{ always() }}         # <--- This runs regardless of prior step failures. De-activated because exit code line is commented out.
         with:
           name: trivy-fs
@@ -54,16 +54,16 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Generate SBOM (CycloneDX)
-        uses: aquasecurity/trivy-action@0.34.2
+        uses: aquasecurity/trivy-action@0.36.0
         with:
           scan-type: fs
           scan-ref: .
           format: cyclonedx
           output: sbom.cdx.json
-          version: v0.69.3
+          version: v0.70.0
 
       - name: Upload SBOM artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: sbom-cyclonedx
           path: sbom.cdx.json
@@ -79,18 +79,18 @@ jobs:
     #       run: docker build --build-arg CI=true -t lca-collaboration:poc .
 
     #     - name: Trivy image scan (SARIF)
-    #       uses: aquasecurity/trivy-action@0.34.2
+    #       uses: aquasecurity/trivy-action@0.36.0
     #       with:
     #         image-ref: lca-collaboration:poc
     #         format: sarif
     #         output: trivy-image.sarif
     #         severity: HIGH,CRITICAL
     #         ignore-unfixed: true
-    #         version: v0.69.3
+    #         version: v0.70.0
     #         #exit-code: 1           # <--- This fails the step if HIGH/CRITICAL vulns found. Commented out because in Public Repo we will be able to upload to GH Code Security and will get notification in pull requests.
 
     #     - name: Upload image scan artifact
-    #       uses: actions/upload-artifact@v6
+    #       uses: actions/upload-artifact@v7
     #       if: ${{ always() }}         # <--- This runs regardless of prior step failures. De-activated because exit code line is commented out.
     #       with:
     #         name: trivy-image
