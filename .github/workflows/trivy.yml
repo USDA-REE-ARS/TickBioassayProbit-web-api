@@ -22,7 +22,7 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Trivy FS + Config scan (SARIF)
-        uses: aquasecurity/trivy-action@0.36.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: .
@@ -54,7 +54,7 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Generate SBOM (CycloneDX)
-        uses: aquasecurity/trivy-action@0.36.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: .
@@ -79,7 +79,7 @@ jobs:
     #       run: docker build --build-arg CI=true -t lca-collaboration:poc .
 
     #     - name: Trivy image scan (SARIF)
-    #       uses: aquasecurity/trivy-action@0.36.0
+    #       uses: aquasecurity/trivy-action@v0.36.0
     #       with:
     #         image-ref: lca-collaboration:poc
     #         format: sarif
