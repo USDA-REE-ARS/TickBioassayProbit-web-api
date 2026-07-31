@@ -11,29 +11,95 @@ on:
 
 permissions:
   contents: read
-
+  security-events: write
+  actions: read
+  
 jobs:
-  trivy-scan:
-    name: Run Trivy filesystem scan
+  repo_scan:
+    name: Repo scan (vuln + secrets + config)
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - name: Install Trivy from official install script
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y wget apt-transport-https gnupg lsb-release
-          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo gpg --dearmor -o /usr/share/keyrings/trivy.gpg
-          echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb generic main" | sudo tee /etc/apt/sources.list.d/trivy.list
-          sudo apt-get update
-          sudo apt-get install -y trivy
+      - name: Trivy FS + Config scan (SARIF)
+        uses: aquasecurity/trivy-action@0.34.2
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret,config
+          format: sarif
+          output: trivy-fs.sarif
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          version: v0.69.3
+          #exit-code: 1           # <--- This fails the step if HIGH/CRITICAL vulns found. Commented out because in Public Repo we will be able to upload to GH Code Security and will get notification in pull requests.
 
-      - name: Run Trivy filesystem scan
-        run: |
-          trivy fs \
-            --severity CRITICAL,HIGH,MEDIUM \
-            --ignore-unfixed \
-            --exit-code 0 \
-            .
+      - name: Upload repo scan artifact
+        uses: actions/upload-artifact@v6
+        #if: ${{ always() }}         # <--- This runs regardless of prior step failures. De-activated because exit code line is commented out.
+        with:
+          name: trivy-fs
+          path: trivy-fs.sarif
+     
+      #ACTIVATE Section Below once repository has become public to allow upload to GitHub Code Scanning.
+      - name: Upload SARIF to GitHub Code Scanning
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-fs.sarif
+      
+  sbom:
+    name: Generate SBOM
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Generate SBOM (CycloneDX)
+        uses: aquasecurity/trivy-action@0.34.2
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: cyclonedx
+          output: sbom.cdx.json
+          version: v0.69.3
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: sbom-cyclonedx
+          path: sbom.cdx.json
+  
+  #Can Comment this our if the repo does not use dockerfiles and does not need to scan images. 
+    # image_scan:
+    #   name: Build + scan Docker image
+    #   runs-on: ubuntu-latest
+    #   steps:
+    #     - uses: actions/checkout@v6
+
+    #     - name: Build Docker image
+    #       run: docker build --build-arg CI=true -t lca-collaboration:poc .
+
+    #     - name: Trivy image scan (SARIF)
+    #       uses: aquasecurity/trivy-action@0.34.2
+    #       with:
+    #         image-ref: lca-collaboration:poc
+    #         format: sarif
+    #         output: trivy-image.sarif
+    #         severity: HIGH,CRITICAL
+    #         ignore-unfixed: true
+    #         version: v0.69.3
+    #         #exit-code: 1           # <--- This fails the step if HIGH/CRITICAL vulns found. Commented out because in Public Repo we will be able to upload to GH Code Security and will get notification in pull requests.
+
+    #     - name: Upload image scan artifact
+    #       uses: actions/upload-artifact@v6
+    #       if: ${{ always() }}         # <--- This runs regardless of prior step failures. De-activated because exit code line is commented out.
+    #       with:
+    #         name: trivy-image
+    #         path: trivy-image.sarif
+
+#ACTIVATE Section Below once repository has become public to allow upload to GitHub Code Scanning. Unless Image Scan Job is commented out
+        # - name: Upload SARIF to GitHub Code Scanning
+        #   uses: github/codeql-action/upload-sarif@v4
+        #   with:
+        #     sarif_file: trivy-image.sarif
+
+    
