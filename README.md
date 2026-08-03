@@ -4,7 +4,7 @@
 
 Professional bioassay probit regression analysis - **run directly in your browser!**
 
-[#![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://your-app.streamlit.app)
+[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://your-app.streamlit.app)
 
 ---
 
