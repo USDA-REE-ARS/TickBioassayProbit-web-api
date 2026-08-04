@@ -51,7 +51,7 @@ Many research institutions have IT restrictions preventing software installation
 
 ### Option 1: Use Online (Recommended)
 
-**Just click:** [#https://tickbioprobit.streamlit.app](#https://tickbioprobit.streamlit.app)
+**Just click:** [https://tickbioprobit.streamlit.app](#https://tickbioprobit.streamlit.app)
 
 No setup needed - start analyzing immediately!
 
