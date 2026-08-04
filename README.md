@@ -4,7 +4,7 @@
 
 Professional bioassay probit regression analysis - **run directly in your browser!**
 
-[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://your-app.streamlit.app)
+[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://tickbioprobit.streamlit.app)
 
 ---
 
@@ -51,7 +51,7 @@ Many research institutions have IT restrictions preventing software installation
 
 ### Option 1: Use Online (Recommended)
 
-**Just click:** [#https://your-app.streamlit.app](#https://your-app.streamlit.app)
+**Just click:** [#https://your-app.streamlit.app](#https://tickbioprobit.streamlit.app)
 
 No setup needed - start analyzing immediately!
 
