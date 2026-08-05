@@ -2347,9 +2347,9 @@ def main():
         
         **Tool Citation:**
         ```
-        Tidwell, J. (2024). Probit Analysis Tool for Bioassay Research. 
+        Tidwell, J. (2026). Probit Analysis Tool for Bioassay Research. 
         USDA ARS Cattle Fever Tick Research Unit, Edinburg, TX, USA.
-        Available at: [URL]
+        Available at: [https://tickbioprobit.streamlit.app/]
         ```
         
         ### 📚 Key References
