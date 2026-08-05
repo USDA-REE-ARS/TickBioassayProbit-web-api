@@ -1184,7 +1184,7 @@ def main():
         
         st.markdown("---")
         st.markdown("### ℹ️ About")
-        st.markdown("**Version 10.3 Web**")
+        st.markdown("**Version 10.4 Web**")
         st.markdown("Probit regression analysis for bioassay data")
         st.markdown("USDA ARS Cattle Fever Tick Research Unit")
         st.markdown("Edinburg, TX, USA")
