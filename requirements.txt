@@ -1,6 +1,9 @@
 # Probit Analysis Tool - Required Python Packages
 # Install with: pip install -r requirements.txt
 
+# Web framework
+streamlit>=1.28.0
+
 # Core scientific computing
 numpy>=2.5.1
 pandas>=3.0.5
@@ -14,6 +17,3 @@ matplotlib>=3.11.1
 
 # PDF generation
 fpdf>=1.7.2
-
-# Optional: For improved performance
-# numba>=0.54.0
