@@ -1,7 +1,7 @@
 """
 Probit Analysis Tool - Web Application
 Streamlit-based web interface for bioassay probit regression analysis
-Version: 10.3 Web
+Version: 10.4 Web
 
 Run with: streamlit run probit_web_app.py
 """
@@ -264,6 +264,147 @@ def compute_ldx_with_ci(result, x, alpha=ALPHA_LEVEL):
     
     return ld, ld_lower, ld_upper
 
+def calculate_r_squared(result, df_processed):
+    """Calculate R-squared for probit regression model"""
+    # Get predicted probabilities
+    X = sm.add_constant(df_processed['log_concentration'])
+    predicted_prob = result.predict(X)
+    
+    # Convert to probit scale for R² calculation
+    observed_mortality_pct = (df_processed['mortality'] / df_processed['n']) * 100
+    # Adjust for 0 and 100% using Abbott correction for probit transformation
+    observed_mortality_pct_adj = observed_mortality_pct.copy()
+    observed_mortality_pct_adj[observed_mortality_pct_adj <= 0] = 0.1
+    observed_mortality_pct_adj[observed_mortality_pct_adj >= 100] = 99.9
+    observed_probits = norm.ppf(observed_mortality_pct_adj / 100)
+    
+    # Predicted probits
+    predicted_probits = norm.ppf(predicted_prob)
+    
+    # Calculate R²
+    ss_res = np.sum((observed_probits - predicted_probits) ** 2)
+    ss_tot = np.sum((observed_probits - np.mean(observed_probits)) ** 2)
+    
+    r_squared = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0
+    
+    # Ensure R² is between 0 and 1
+    r_squared = max(0, min(1, r_squared))
+    
+    return r_squared
+
+def interpret_slope_biology(slope, chemical="chemical"):
+    """Interpret biological meaning of probit slope"""
+    if slope > 15:
+        return f"Very steep dose-response (slope = {slope:.2f}) - High specificity. " + \
+               f"Small increases in {chemical} concentration cause large mortality changes. " + \
+               "Suggests single target site or highly specific mode of action."
+    elif slope > 10:
+        return f"Steep dose-response (slope = {slope:.2f}) - Good specificity. " + \
+               f"Moderate increases in {chemical} concentration cause substantial mortality changes. " + \
+               "Indicates relatively specific mode of action."
+    elif slope > 5:
+        return f"Moderate dose-response (slope = {slope:.2f}) - Typical biological response. " + \
+               f"Normal dose-mortality relationship for most bioassays. " + \
+               "Suggests standard target site interaction."
+    elif slope > 2:
+        return f"Gradual dose-response (slope = {slope:.2f}) - Lower specificity. " + \
+               f"Large increases in {chemical} concentration needed for mortality changes. " + \
+               "May indicate multiple target sites or variable susceptibility."
+    else:
+        return f"Very gradual dose-response (slope = {slope:.2f}) - Poor specificity. " + \
+               f"Very large concentration increases needed for mortality changes. " + \
+               "Suggests heterogeneous population, multiple mechanisms, or poor chemical activity."
+
+def interpret_r_squared_biology(r_squared):
+    """Interpret biological meaning of R-squared value"""
+    if r_squared >= 0.95:
+        return f"Excellent model fit (R² = {r_squared:.3f}) - Very consistent biological response. " + \
+               "Low variability suggests homogeneous population with consistent susceptibility."
+    elif r_squared >= 0.90:
+        return f"Good model fit (R² = {r_squared:.3f}) - Consistent biological response. " + \
+               "Acceptable variability for bioassay work."
+    elif r_squared >= 0.80:
+        return f"Acceptable model fit (R² = {r_squared:.3f}) - Moderate biological variability. " + \
+               "Some inconsistency in response, possibly due to experimental variability."
+    elif r_squared >= 0.70:
+        return f"Fair model fit (R² = {r_squared:.3f}) - Higher biological variability. " + \
+               "Suggests heterogeneous population or experimental issues."
+    else:
+        return f"Poor model fit (R² = {r_squared:.3f}) - High biological variability. " + \
+               "May indicate mixed populations, experimental problems, or inappropriate dose range."
+
+def compute_resistance_ratio_ci(result1, result2, ld_level=50, alpha=ALPHA_LEVEL):
+    """
+    Compute resistance ratio (LDx_1 / LDx_2) with 95% CI using the delta method,
+    consistent with the log10-scale approach used in compute_ldx_with_ci().
+
+    Both LD estimates are computed on the log10(concentration) scale, so the
+    ratio's confidence interval is derived by combining the two independent
+    log10-scale variances rather than mixing log10 and natural-log scales.
+    """
+    intercept1, slope1 = result1.params
+    intercept2, slope2 = result2.params
+
+    if not (np.isfinite(intercept1) and np.isfinite(slope1) and
+            np.isfinite(intercept2) and np.isfinite(slope2)):
+        raise ValueError("Model parameters are not finite. Check data quality and model convergence.")
+
+    if abs(slope1) < 1e-10 or abs(slope2) < 1e-10:
+        raise ValueError("Slope is too close to zero (flat dose-response curve) in one or both models.")
+
+    target_quantile = norm.ppf(ld_level / 100.0)
+
+    # Point estimates on log10(concentration) scale
+    log_conc_ld1 = (target_quantile - intercept1) / slope1
+    log_conc_ld2 = (target_quantile - intercept2) / slope2
+
+    # Delta-method variance for each LD estimate (log10 scale) - same derivation as compute_ldx_with_ci
+    cov1 = result1.cov_params()
+    var_intercept1 = cov1.iloc[0, 0]
+    var_slope1 = cov1.iloc[1, 1]
+    cov_is1 = cov1.iloc[0, 1]
+
+    cov2 = result2.cov_params()
+    var_intercept2 = cov2.iloc[0, 0]
+    var_slope2 = cov2.iloc[1, 1]
+    cov_is2 = cov2.iloc[0, 1]
+
+    if not all(np.isfinite([var_intercept1, var_slope1, cov_is1, var_intercept2, var_slope2, cov_is2])):
+        raise ValueError("Invalid covariance matrix values. Check model fitting.")
+
+    grad_intercept1 = -1 / slope1
+    grad_slope1 = -(target_quantile - intercept1) / (slope1 ** 2)
+    var_log_ld1 = (grad_intercept1 ** 2) * var_intercept1 + \
+                  (grad_slope1 ** 2) * var_slope1 + \
+                  2 * grad_intercept1 * grad_slope1 * cov_is1
+
+    grad_intercept2 = -1 / slope2
+    grad_slope2 = -(target_quantile - intercept2) / (slope2 ** 2)
+    var_log_ld2 = (grad_intercept2 ** 2) * var_intercept2 + \
+                  (grad_slope2 ** 2) * var_slope2 + \
+                  2 * grad_intercept2 * grad_slope2 * cov_is2
+
+    if var_log_ld1 < 0 or var_log_ld2 < 0:
+        raise ValueError("Negative variance calculated in LD estimation. Check model covariance matrix.")
+
+    # log10(ratio) = log10(LDx_1) - log10(LDx_2); variances add for independent samples
+    log10_rr = log_conc_ld1 - log_conc_ld2
+    se_log10_rr = np.sqrt(var_log_ld1 + var_log_ld2)
+
+    if not np.isfinite(se_log10_rr) or se_log10_rr < 0:
+        raise ValueError("Could not calculate a valid standard error for the resistance ratio.")
+
+    z_critical = norm.ppf(1 - alpha / 2)
+
+    rr = 10 ** log10_rr
+    rr_lower = 10 ** (log10_rr - z_critical * se_log10_rr)
+    rr_upper = 10 ** (log10_rr + z_critical * se_log10_rr)
+
+    if not (np.isfinite(rr) and np.isfinite(rr_lower) and np.isfinite(rr_upper) and rr > 0):
+        raise ValueError("Resistance ratio confidence interval calculation produced invalid bounds.")
+
+    return rr, rr_lower, rr_upper
+
 def calculate_replicate_variability(df):
     """Calculate variability statistics for replicates"""
     df_with_pct = df.copy()
@@ -335,7 +476,7 @@ def create_probit_plot(df, result, strain, chemical):
     # Fitted line
     log_conc_range = np.linspace(df['log_concentration'].min(),
                                  df['log_concentration'].max(), 100)
-    fitted_probits = result.params[0] + result.params[1] * log_conc_range
+    fitted_probits = result.params.iloc[0] + result.params.iloc[1] * log_conc_range
     
     ax.plot(log_conc_range, fitted_probits,
            color='blue', linewidth=2, label=f'{strain} (Fitted)', zorder=2)
@@ -374,7 +515,7 @@ def create_combined_probit_plot(df1, result1, strain1, df2, result2, strain2, ch
     # Dataset 1 - fitted line
     log_conc_range1 = np.linspace(df1['log_concentration'].min(),
                                   df1['log_concentration'].max(), 100)
-    fitted_probits1 = result1.params[0] + result1.params[1] * log_conc_range1
+    fitted_probits1 = result1.params.iloc[0] + result1.params.iloc[1] * log_conc_range1
     ax.plot(log_conc_range1, fitted_probits1,
            color='darkred', linewidth=2, label=f'{strain1} (Fitted)', zorder=2)
     
@@ -391,7 +532,7 @@ def create_combined_probit_plot(df1, result1, strain1, df2, result2, strain2, ch
     # Dataset 2 - fitted line
     log_conc_range2 = np.linspace(df2['log_concentration'].min(),
                                   df2['log_concentration'].max(), 100)
-    fitted_probits2 = result2.params[0] + result2.params[1] * log_conc_range2
+    fitted_probits2 = result2.params.iloc[0] + result2.params.iloc[1] * log_conc_range2
     ax.plot(log_conc_range2, fitted_probits2,
            color='darkblue', linewidth=2, label=f'{strain2} (Fitted)', zorder=2)
     
@@ -400,8 +541,8 @@ def create_combined_probit_plot(df1, result1, strain1, df2, result2, strain2, ch
     ax.axhline(y=probit_50, color='gray', linestyle='--', alpha=0.5, linewidth=1)
     
     # Calculate LD50 positions
-    ld50_1 = (probit_50 - result1.params[0]) / result1.params[1]
-    ld50_2 = (probit_50 - result2.params[0]) / result2.params[1]
+    ld50_1 = (probit_50 - result1.params.iloc[0]) / result1.params.iloc[1]
+    ld50_2 = (probit_50 - result2.params.iloc[0]) / result2.params.iloc[1]
     ax.axvline(x=ld50_1, color='red', linestyle=':', alpha=0.5, linewidth=1)
     ax.axvline(x=ld50_2, color='blue', linestyle=':', alpha=0.5, linewidth=1)
     
@@ -464,12 +605,73 @@ def create_pdf_single_dataset(df, result, chi_square, df_degrees, p_value, strai
     pdf.cell(0, 6, f'Interpretation: {fit_text}', 0, 1)
     pdf.ln(5)
     
-    # Model Parameters
+    # Model Parameters with slope and R² information
     pdf.set_font('Arial', 'B', 14)
-    pdf.cell(0, 10, 'Model Parameters', 0, 1)
+    pdf.cell(0, 10, 'Model Parameters & Fit Quality', 0, 1)
     pdf.set_font('Arial', '', 11)
-    pdf.cell(0, 6, f'Intercept: {result.params[0]:.4f} (SE: {result.bse[0]:.4f})', 0, 1)
-    pdf.cell(0, 6, f'Slope: {result.params[1]:.4f} (SE: {result.bse[1]:.4f})', 0, 1)
+    
+    # Calculate R²
+    try:
+        r_squared = calculate_r_squared(result, df_processed)
+        r2_text = f'{r_squared:.4f}'
+    except:
+        r_squared = None
+        r2_text = 'Could not calculate'
+    
+    # Extract slope and intercept
+    intercept = result.params.iloc[0]
+    slope = result.params.iloc[1]
+    
+    pdf.cell(0, 6, f'Intercept: {intercept:.6f} (SE: {result.bse.iloc[0]:.6f})', 0, 1)
+    pdf.cell(0, 6, f'Slope: {slope:.6f} (SE: {result.bse.iloc[1]:.6f})', 0, 1)
+    pdf.cell(0, 6, f'R-squared: {r2_text}', 0, 1)
+    
+    # Add biological interpretation
+    pdf.ln(3)
+    pdf.set_font('Arial', 'B', 12)
+    pdf.cell(0, 8, 'Biological Interpretation:', 0, 1)
+    pdf.set_font('Arial', '', 9)
+    
+    # Slope interpretation (wrap text for PDF)
+    slope_interp = interpret_slope_biology(slope, chemical)
+    if len(slope_interp) > 90:
+        # Split long interpretation into multiple lines
+        words = slope_interp.split()
+        lines = []
+        current_line = []
+        for word in words:
+            current_line.append(word)
+            if len(' '.join(current_line)) > 90:
+                lines.append(' '.join(current_line[:-1]))
+                current_line = [word]
+        if current_line:
+            lines.append(' '.join(current_line))
+        
+        for line in lines:
+            pdf.cell(0, 4, line, 0, 1)
+    else:
+        pdf.cell(0, 4, slope_interp, 0, 1)
+    
+    # R² interpretation
+    if r_squared is not None:
+        pdf.ln(2)
+        r2_interp = interpret_r_squared_biology(r_squared)
+        if len(r2_interp) > 90:
+            words = r2_interp.split()
+            lines = []
+            current_line = []
+            for word in words:
+                current_line.append(word)
+                if len(' '.join(current_line)) > 90:
+                    lines.append(' '.join(current_line[:-1]))
+                    current_line = [word]
+            if current_line:
+                lines.append(' '.join(current_line))
+            
+            for line in lines:
+                pdf.cell(0, 4, line, 0, 1)
+        else:
+            pdf.cell(0, 4, r2_interp, 0, 1)
     
     return pdf
 
@@ -569,8 +771,8 @@ def create_pdf_single_with_plots(df, df_processed, result, chi_square, df_degree
         pdf.set_font('Arial', 'B', 14)
         pdf.cell(0, 10, 'Model Parameters', 0, 1)
         pdf.set_font('Arial', '', 11)
-        pdf.cell(0, 6, f'Intercept: {result.params[0]:.4f} (SE: {result.bse[0]:.4f})', 0, 1)
-        pdf.cell(0, 6, f'Slope: {result.params[1]:.4f} (SE: {result.bse[1]:.4f})', 0, 1)
+        pdf.cell(0, 6, f'Intercept: {result.params.iloc[0]:.4f} (SE: {result.bse.iloc[0]:.4f})', 0, 1)
+        pdf.cell(0, 6, f'Slope: {result.params.iloc[1]:.4f} (SE: {result.bse.iloc[1]:.4f})', 0, 1)
         pdf.ln(10)
     
     # Add plots on separate pages (if any are selected)
@@ -643,23 +845,27 @@ def create_pdf_comparison(df1, result1, chi_sq1, df_deg1, p_val1, strain1, chemi
     
     # LD Estimates Comparison
     pdf.set_font('Arial', 'B', 14)
-    pdf.cell(0, 10, 'Lethal Dose Estimates', 0, 1)
-    pdf.set_font('Arial', 'B', 11)
-    pdf.cell(30, 6, 'LD Level', 1)
-    pdf.cell(45, 6, strain1, 1)
-    pdf.cell(45, 6, strain2, 1)
-    pdf.cell(30, 6, 'Ratio', 1)
+    pdf.cell(0, 10, 'Lethal Dose Estimates (95% CI)', 0, 1)
+    pdf.set_font('Arial', 'B', 9)
+    pdf.cell(18, 6, 'LD Level', 1)
+    pdf.cell(26, 6, strain1[:14], 1)
+    pdf.cell(40, 6, '95% CI', 1)
+    pdf.cell(26, 6, strain2[:14], 1)
+    pdf.cell(40, 6, '95% CI', 1)
+    pdf.cell(20, 6, 'Ratio', 1)
     pdf.ln()
     
-    pdf.set_font('Arial', '', 11)
+    pdf.set_font('Arial', '', 9)
     for ld_level in LD_LEVELS:
-        ld1, _, _ = compute_ldx_with_ci(result1, ld_level)
-        ld2, _, _ = compute_ldx_with_ci(result2, ld_level)
+        ld1, lower1, upper1 = compute_ldx_with_ci(result1, ld_level)
+        ld2, lower2, upper2 = compute_ldx_with_ci(result2, ld_level)
         ratio = ld1 / ld2
-        pdf.cell(30, 6, f'LD{ld_level}', 1)
-        pdf.cell(45, 6, f'{ld1:.6f}', 1)
-        pdf.cell(45, 6, f'{ld2:.6f}', 1)
-        pdf.cell(30, 6, f'{ratio:.2f}', 1)
+        pdf.cell(18, 6, f'LD{ld_level}', 1)
+        pdf.cell(26, 6, f'{ld1:.6f}', 1)
+        pdf.cell(40, 6, f'({lower1:.6f}-{upper1:.6f})', 1)
+        pdf.cell(26, 6, f'{ld2:.6f}', 1)
+        pdf.cell(40, 6, f'({lower2:.6f}-{upper2:.6f})', 1)
+        pdf.cell(20, 6, f'{ratio:.2f}', 1)
         pdf.ln()
     pdf.ln(5)
     
@@ -792,23 +998,27 @@ def create_pdf_comparison_with_plots(df1, df1_processed, result1, chi_sq1, df_de
     
     # LD Estimates Comparison
     pdf.set_font('Arial', 'B', 14)
-    pdf.cell(0, 10, 'Lethal Dose Estimates', 0, 1)
-    pdf.set_font('Arial', 'B', 11)
-    pdf.cell(30, 6, 'LD Level', 1)
-    pdf.cell(45, 6, strain1, 1)
-    pdf.cell(45, 6, strain2, 1)
-    pdf.cell(30, 6, 'Ratio', 1)
+    pdf.cell(0, 10, 'Lethal Dose Estimates (95% CI)', 0, 1)
+    pdf.set_font('Arial', 'B', 9)
+    pdf.cell(18, 6, 'LD Level', 1)
+    pdf.cell(26, 6, strain1[:14], 1)
+    pdf.cell(40, 6, '95% CI', 1)
+    pdf.cell(26, 6, strain2[:14], 1)
+    pdf.cell(40, 6, '95% CI', 1)
+    pdf.cell(20, 6, 'Ratio', 1)
     pdf.ln()
     
-    pdf.set_font('Arial', '', 11)
+    pdf.set_font('Arial', '', 9)
     for ld_level in LD_LEVELS:
-        ld1, _, _ = compute_ldx_with_ci(result1, ld_level)
-        ld2, _, _ = compute_ldx_with_ci(result2, ld_level)
+        ld1, lower1, upper1 = compute_ldx_with_ci(result1, ld_level)
+        ld2, lower2, upper2 = compute_ldx_with_ci(result2, ld_level)
         ratio = ld1 / ld2
-        pdf.cell(30, 6, f'LD{ld_level}', 1)
-        pdf.cell(45, 6, f'{ld1:.6f}', 1)
-        pdf.cell(45, 6, f'{ld2:.6f}', 1)
-        pdf.cell(30, 6, f'{ratio:.2f}', 1)
+        pdf.cell(18, 6, f'LD{ld_level}', 1)
+        pdf.cell(26, 6, f'{ld1:.6f}', 1)
+        pdf.cell(40, 6, f'({lower1:.6f}-{upper1:.6f})', 1)
+        pdf.cell(26, 6, f'{ld2:.6f}', 1)
+        pdf.cell(40, 6, f'({lower2:.6f}-{upper2:.6f})', 1)
+        pdf.cell(20, 6, f'{ratio:.2f}', 1)
         pdf.ln()
     pdf.ln(5)
     
@@ -1207,17 +1417,70 @@ def main():
                             else:
                                 st.success("✓ Model fits well (p > 0.05)")
                         
-                        # Model Parameters
-                        st.markdown("### 🔢 Model Parameters")
-                        params_data = []
-                        for param in result.params.index:
-                            params_data.append({
-                                'Parameter': param,
-                                'Estimate': f'{result.params[param]:.4f}',
-                                'Std Error': f'{result.bse[param]:.4f}',
-                                'p-value': f'{result.pvalues[param]:.4f}'
-                            })
-                        st.table(pd.DataFrame(params_data))
+                        # Model Parameters with R² and biological interpretation
+                        st.markdown("### 🔢 Model Parameters & Fit Quality")
+                        
+                        # Calculate R²
+                        try:
+                            r_squared = calculate_r_squared(result, df_processed)
+                        except Exception:
+                            r_squared = None
+                        
+                        # Extract slope and intercept
+                        intercept = result.params.iloc[0]
+                        slope = result.params.iloc[1]
+                        
+                        # Display parameters in columns
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            st.metric("Intercept", f"{intercept:.4f}")
+                            st.caption(f"SE: {result.bse.iloc[0]:.4f}")
+                        with col2:
+                            st.metric("Slope", f"{slope:.4f}")
+                            st.caption(f"SE: {result.bse.iloc[1]:.4f}")
+                        with col3:
+                            if r_squared is not None:
+                                st.metric("R²", f"{r_squared:.3f}")
+                                st.caption("Goodness of fit")
+                            else:
+                                st.metric("R²", "N/A")
+                                st.caption("Could not calculate")
+                        
+                        # Biological interpretation
+                        st.markdown("### 🧬 Biological Interpretation")
+                        
+                        # Slope interpretation
+                        with st.expander("📈 Dose-Response Relationship (Slope Analysis)", expanded=True):
+                            slope_interpretation = interpret_slope_biology(slope, chemical)
+                            st.info(slope_interpretation)
+                        
+                        # R² interpretation
+                        if r_squared is not None:
+                            with st.expander("🎯 Response Consistency (R² Analysis)", expanded=True):
+                                r2_interpretation = interpret_r_squared_biology(r_squared)
+                                st.info(r2_interpretation)
+                        
+                        # Combined interpretation
+                        with st.expander("🔬 Overall Biological Assessment", expanded=True):
+                            if r_squared is not None and r_squared >= 0.80 and slope >= 5:
+                                st.success(f"**High-quality bioassay:** Good model fit (R² = {r_squared:.3f}) and appropriate dose-response steepness (slope = {slope:.2f}) indicate reliable results with clear biological significance.")
+                            elif r_squared is not None and r_squared >= 0.70 and slope >= 3:
+                                st.info(f"**Acceptable bioassay:** Moderate model fit (R² = {r_squared:.3f}) and dose-response steepness (slope = {slope:.2f}) provide usable results, though some variability is present.")
+                            else:
+                                st.warning(f"**Consider optimization:** Model fit (R² = {r_squared:.3f if r_squared else 'N/A'}) and/or dose-response steepness (slope = {slope:.2f}) suggest potential for improvement through better concentration selection or reduced experimental variability.")
+                        
+                        # Technical parameters table
+                        with st.expander("📊 Technical Parameter Details", expanded=False):
+                            params_data = []
+                            for param in result.params.index:
+                                params_data.append({
+                                    'Parameter': param,
+                                    'Estimate': f'{result.params[param]:.6f}',
+                                    'Std Error': f'{result.bse[param]:.6f}',
+                                    'z-value': f'{result.tvalues[param]:.4f}',
+                                    'p-value': f'{result.pvalues[param]:.6f}'
+                                })
+                            st.table(pd.DataFrame(params_data))
                         
                         # Replicate Variability
                         st.markdown("### 📊 Replicate Variability")
@@ -1412,8 +1675,12 @@ def main():
                             st.error("❌ Reference strain LD50 is zero - cannot calculate resistance ratio.")
                             st.stop()
                         
-                        # Resistance ratio calculation
-                        resistance_ratio = ld50_1 / ld50_2
+                        # Resistance ratio and confidence interval (delta method, log10 scale)
+                        try:
+                            resistance_ratio, rr_lower, rr_upper = compute_resistance_ratio_ci(result1, result2, ld_level=50)
+                        except ValueError as e:
+                            st.error(f"❌ Error computing resistance ratio: {str(e)}")
+                            st.stop()
                         
                         # CRITICAL FIX: Validate resistance ratio
                         if not np.isfinite(resistance_ratio) or resistance_ratio <= 0:
@@ -1422,37 +1689,6 @@ def main():
                             st.error(f"  • LD50 ratio: {ld50_1} / {ld50_2}")
                             st.error("Check LD50 estimates and model parameters.")
                             st.stop()
-                        
-                        # Resistance ratio confidence interval (Fieller's method approximation)
-                        try:
-                            log_rr = np.log(resistance_ratio)
-                            se_log_rr = np.sqrt(
-                                (result1.bse[0]**2 + result1.bse[1]**2 * (norm.ppf(0.5) - result1.params[0])**2 / result1.params[1]**2) / ld50_1**2 +
-                                (result2.bse[0]**2 + result2.bse[1]**2 * (norm.ppf(0.5) - result2.params[0])**2 / result2.params[1]**2) / ld50_2**2
-                            )
-                            
-                            # CRITICAL FIX: Validate confidence interval calculation
-                            if not np.isfinite(se_log_rr) or se_log_rr <= 0:
-                                st.warning("⚠️ Could not calculate reliable confidence intervals for resistance ratio.")
-                                st.warning("Using point estimate only.")
-                                rr_lower = resistance_ratio * 0.5  # Rough approximation
-                                rr_upper = resistance_ratio * 2.0  
-                            else:
-                                rr_lower = np.exp(log_rr - 1.96 * se_log_rr)
-                                rr_upper = np.exp(log_rr + 1.96 * se_log_rr)
-                                
-                                # Validate bounds
-                                if not (np.isfinite(rr_lower) and np.isfinite(rr_upper) and rr_lower > 0 and rr_upper > 0):
-                                    st.warning("⚠️ Confidence interval calculation produced invalid bounds.")
-                                    st.warning("Using point estimate only.")
-                                    rr_lower = resistance_ratio * 0.5
-                                    rr_upper = resistance_ratio * 2.0
-                                    
-                        except Exception as e:
-                            st.warning(f"⚠️ Error in confidence interval calculation: {str(e)}")
-                            st.warning("Using point estimate only.")
-                            rr_lower = resistance_ratio * 0.5
-                            rr_upper = resistance_ratio * 2.0
                         
                         # LD Estimates Comparison
                         st.markdown("### 💊 Lethal Dose Comparison")
@@ -1485,14 +1721,103 @@ def main():
                         than {strain2} to {chemical1}
                         """)
                         
+                        # Model Parameters and Fit Comparison
+                        st.markdown("### 🔢 Model Parameters & Fit Comparison")
+                        
+                        # Calculate R² for both models
+                        try:
+                            r_squared_1 = calculate_r_squared(result1, df1_processed)
+                        except Exception:
+                            r_squared_1 = None
+                        
+                        try:
+                            r_squared_2 = calculate_r_squared(result2, df2_processed)
+                        except Exception:
+                            r_squared_2 = None
+                        
+                        # Extract parameters
+                        intercept1, slope1 = result1.params.iloc[0], result1.params.iloc[1]
+                        intercept2, slope2 = result2.params.iloc[0], result2.params.iloc[1]
+                        
+                        # Display comparison in columns
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            st.markdown(f"**{strain1} Parameters:**")
+                            st.metric("Intercept", f"{intercept1:.4f}")
+                            st.metric("Slope", f"{slope1:.4f}")
+                            if r_squared_1 is not None:
+                                st.metric("R²", f"{r_squared_1:.3f}")
+                            else:
+                                st.metric("R²", "N/A")
+                        
+                        with col2:
+                            st.markdown(f"**{strain2} Parameters:**")
+                            st.metric("Intercept", f"{intercept2:.4f}")
+                            st.metric("Slope", f"{slope2:.4f}")
+                            if r_squared_2 is not None:
+                                st.metric("R²", f"{r_squared_2:.3f}")
+                            else:
+                                st.metric("R²", "N/A")
+                        
+                        # Biological interpretation comparison
+                        st.markdown("### 🧬 Biological Interpretation Comparison")
+                        
+                        # Slope comparison
+                        with st.expander("📈 Dose-Response Comparison (Slope Analysis)", expanded=True):
+                            slope_ratio = slope1 / slope2 if slope2 != 0 else float('inf')
+                            
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                st.markdown(f"**{strain1}:**")
+                                slope1_interpretation = interpret_slope_biology(slope1, chemical1)
+                                st.info(slope1_interpretation)
+                            
+                            with col2:
+                                st.markdown(f"**{strain2}:**")
+                                slope2_interpretation = interpret_slope_biology(slope2, chemical1)
+                                st.info(slope2_interpretation)
+                            
+                            # Slope comparison summary
+                            if abs(slope1 - slope2) / max(abs(slope2), 0.001) < 0.1:  # Within 10%
+                                st.success(f"**Similar dose-response patterns:** Slopes are comparable ({slope1:.2f} vs {slope2:.2f}), suggesting similar modes of action and population homogeneity.")
+                            elif slope1 > slope2 * 1.5:
+                                st.warning(f"**{strain1} has steeper dose-response:** {slope_ratio:.1f}x steeper than {strain2}. This may indicate: more homogeneous population, more specific target interaction, or different resistance mechanism affecting dose-response shape.")
+                            elif slope2 > slope1 * 1.5:
+                                st.warning(f"**{strain2} has steeper dose-response:** {slope2/slope1:.1f}x steeper than {strain1}. This may indicate: more homogeneous population, more specific target interaction, or different resistance mechanism affecting dose-response shape.")
+                            else:
+                                st.info(f"**Moderate slope differences:** {strain1} slope is {slope_ratio:.1f}x that of {strain2}. Some difference in dose-response characteristics may reflect population heterogeneity or mechanism differences.")
+                        
+                        # R² comparison
+                        if r_squared_1 is not None and r_squared_2 is not None:
+                            with st.expander("🎯 Response Consistency Comparison (R² Analysis)", expanded=True):
+                                col1, col2 = st.columns(2)
+                                with col1:
+                                    st.markdown(f"**{strain1}:**")
+                                    r2_1_interpretation = interpret_r_squared_biology(r_squared_1)
+                                    st.info(r2_1_interpretation)
+                                
+                                with col2:
+                                    st.markdown(f"**{strain2}:**")
+                                    r2_2_interpretation = interpret_r_squared_biology(r_squared_2)
+                                    st.info(r2_2_interpretation)
+                                
+                                # R² comparison summary
+                                if abs(r_squared_1 - r_squared_2) < 0.05:
+                                    st.success(f"**Similar response consistency:** Both strains show comparable model fits (R² = {r_squared_1:.3f} vs {r_squared_2:.3f}), indicating similar population homogeneity.")
+                                elif r_squared_1 > r_squared_2 + 0.05:
+                                    st.info(f"**{strain1} shows more consistent response:** Higher R² ({r_squared_1:.3f} vs {r_squared_2:.3f}) suggests more homogeneous population or better experimental conditions.")
+                                else:
+                                    st.info(f"**{strain2} shows more consistent response:** Higher R² ({r_squared_2:.3f} vs {r_squared_1:.3f}) suggests more homogeneous population or better experimental conditions.")
+                        
                         # Statistical Tests
                         st.markdown("### 📊 Statistical Tests")
                         
                         # Test for equality of slopes (parallelism test)
-                        slope1 = result1.params[1]
-                        slope2 = result2.params[1]
-                        se_slope1 = result1.bse[1]
-                        se_slope2 = result2.bse[1]
+                        slope1 = result1.params.iloc[1]
+                        slope2 = result2.params.iloc[1]
+                        se_slope1 = result1.bse.iloc[1]
+                        se_slope2 = result2.bse.iloc[1]
                         
                         z_parallel = (slope1 - slope2) / np.sqrt(se_slope1**2 + se_slope2**2)
                         p_parallel = 2 * (1 - norm.cdf(abs(z_parallel)))
@@ -1512,10 +1837,10 @@ def main():
                                 st.caption("Lines are not parallel - interpret resistance ratio with caution")
                         
                         # Test for equality of intercepts (given parallel slopes)
-                        intercept1 = result1.params[0]
-                        intercept2 = result2.params[0]
-                        se_intercept1 = result1.bse[0]
-                        se_intercept2 = result2.bse[0]
+                        intercept1 = result1.params.iloc[0]
+                        intercept2 = result2.params.iloc[0]
+                        se_intercept1 = result1.bse.iloc[0]
+                        se_intercept2 = result2.bse.iloc[0]
                         
                         z_equality = (intercept1 - intercept2) / np.sqrt(se_intercept1**2 + se_intercept2**2)
                         p_equality = 2 * (1 - norm.cdf(abs(z_equality)))
@@ -1866,8 +2191,9 @@ def main():
         ### ✅ What Gets Analyzed
         
         - **LD1, LD50, LD99**: Lethal dose estimates with 95% confidence intervals
-        - **Model Fit**: Chi-square goodness-of-fit test
-        - **Parameters**: Probit regression coefficients
+        - **Model Fit**: Chi-square goodness-of-fit test and R² correlation
+        - **Parameters**: Probit regression coefficients (slope and intercept)
+        - **Biological Interpretation**: Slope steepness and response consistency analysis
         - **Variability**: Replicate variability analysis (CV%)
         - **Plots**: Observed vs. fitted mortality curves
         
