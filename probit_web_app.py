@@ -1153,7 +1153,7 @@ def fig_to_base64(fig):
 def main():
     # Header
     st.markdown('<div class="main-header">📊 Probit Analysis Tool</div>', unsafe_allow_html=True)
-    st.markdown("**Web Version 10.3** - Professional bioassay analysis in your browser")
+    st.markdown("**Web Version 10.4** - Professional bioassay analysis in your browser")
     
     # Sidebar
     with st.sidebar:
@@ -1184,7 +1184,7 @@ def main():
         
         st.markdown("---")
         st.markdown("### ℹ️ About")
-        st.markdown("**Version 10.3 Web**")
+        st.markdown("**Version 10.4 Web**")
         st.markdown("Probit regression analysis for bioassay data")
         st.markdown("USDA ARS Cattle Fever Tick Research Unit")
         st.markdown("Edinburg, TX, USA")
