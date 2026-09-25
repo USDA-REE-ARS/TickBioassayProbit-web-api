@@ -1,7 +1,7 @@
 """
 Probit Analysis Tool - Web Application
 Streamlit-based web interface for bioassay probit regression analysis
-Version: 11.7 Web
+Version: 11.8 Web
 
 Run with: streamlit run probit_web_app.py
 """
@@ -648,15 +648,26 @@ def interpret_r_squared_biology(r_squared):
         "assessment in this application uses the Pearson chi-square statistic and its residual degrees of freedom."
     )
 
-def compute_resistance_ratio_ci(result1, result2, lc_level=50, alpha=ALPHA_LEVEL):
+def compute_resistance_ratio_ci(result1, result2, lc_level=50, alpha=ALPHA_LEVEL, **legacy_kwargs):
     """
-    Compute resistance ratio (LCx_1 / LCx_2) with a delta-method 95% CI,
-    consistent with the log10-scale approach used in compute_lcx_with_ci().
+    Compute resistance ratio (LCx_1 / LCx_2) with a delta-method 95% CI.
+
+    ``lc_level`` is the current parameter name. ``ld_level`` is accepted as a
+    backward-compatible alias so older deployed callers do not fail while the
+    application transitions fully to LC terminology. Internal v11.8 callers
+    pass the LC level positionally to avoid keyword-name coupling.
 
     Both LC estimates are computed on the log10(concentration) scale, so the
     ratio's confidence interval is derived by combining the two independent
     log10-scale variances rather than mixing log10 and natural-log scales.
     """
+    if 'ld_level' in legacy_kwargs:
+        if lc_level != 50:
+            raise TypeError("Specify only one of lc_level or legacy ld_level.")
+        lc_level = legacy_kwargs.pop('ld_level')
+    if legacy_kwargs:
+        unexpected = ', '.join(sorted(legacy_kwargs))
+        raise TypeError(f"Unexpected keyword argument(s): {unexpected}")
     intercept1, slope1 = result1.params
     intercept2, slope2 = result2.params
 
@@ -739,7 +750,7 @@ def compute_lc50_fold_difference(result1, result2, name1='Dataset 1', name2='Dat
     compute_resistance_ratio_ci() without inversion.
     """
     ratio, lower, upper = compute_resistance_ratio_ci(
-        result1, result2, lc_level=lc_level, alpha=alpha
+        result1, result2, lc_level, alpha
     )
 
     if ratio >= 1:
@@ -804,147 +815,6 @@ def compare_dose_response_models(df1, df2):
         'p_shift': p_shift,
     }
 
-
-def calculate_r_squared(result, df_processed):
-    """Calculate R-squared for probit regression model"""
-    # Get predicted probabilities
-    X = sm.add_constant(df_processed['log_concentration'])
-    predicted_prob = result.predict(X)
-    
-    # Convert to probit scale for R² calculation
-    observed_mortality_pct = (df_processed['mortality'] / df_processed['n']) * 100
-    # Adjust for 0 and 100% using Abbott correction for probit transformation
-    observed_mortality_pct_adj = observed_mortality_pct.copy()
-    observed_mortality_pct_adj[observed_mortality_pct_adj <= 0] = 0.1
-    observed_mortality_pct_adj[observed_mortality_pct_adj >= 100] = 99.9
-    observed_probits = norm.ppf(observed_mortality_pct_adj / 100)
-    
-    # Predicted probits
-    predicted_probits = norm.ppf(predicted_prob)
-    
-    # Calculate R²
-    ss_res = np.sum((observed_probits - predicted_probits) ** 2)
-    ss_tot = np.sum((observed_probits - np.mean(observed_probits)) ** 2)
-    
-    r_squared = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0
-    
-    # Ensure R² is between 0 and 1
-    r_squared = max(0, min(1, r_squared))
-    
-    return r_squared
-
-def interpret_slope_biology(slope, chemical="chemical"):
-    """Interpret biological meaning of probit slope"""
-    if slope > 15:
-        return f"Very steep dose-response (slope = {slope:.2f}) - High specificity. " + \
-               f"Small increases in {chemical} concentration cause large mortality changes. " + \
-               "Suggests single target site or highly specific mode of action."
-    elif slope > 10:
-        return f"Steep dose-response (slope = {slope:.2f}) - Good specificity. " + \
-               f"Moderate increases in {chemical} concentration cause substantial mortality changes. " + \
-               "Indicates relatively specific mode of action."
-    elif slope > 5:
-        return f"Moderate dose-response (slope = {slope:.2f}) - Typical biological response. " + \
-               f"Normal dose-mortality relationship for most bioassays. " + \
-               "Suggests standard target site interaction."
-    elif slope > 2:
-        return f"Gradual dose-response (slope = {slope:.2f}) - Lower specificity. " + \
-               f"Large increases in {chemical} concentration needed for mortality changes. " + \
-               "May indicate multiple target sites or variable susceptibility."
-    else:
-        return f"Very gradual dose-response (slope = {slope:.2f}) - Poor specificity. " + \
-               f"Very large concentration increases needed for mortality changes. " + \
-               "Suggests heterogeneous population, multiple mechanisms, or poor chemical activity."
-
-def interpret_r_squared_biology(r_squared):
-    """Interpret biological meaning of R-squared value"""
-    if r_squared >= 0.95:
-        return f"Excellent model fit (R² = {r_squared:.3f}) - Very consistent biological response. " + \
-               "Low variability suggests homogeneous population with consistent susceptibility."
-    elif r_squared >= 0.90:
-        return f"Good model fit (R² = {r_squared:.3f}) - Consistent biological response. " + \
-               "Acceptable variability for bioassay work."
-    elif r_squared >= 0.80:
-        return f"Acceptable model fit (R² = {r_squared:.3f}) - Moderate biological variability. " + \
-               "Some inconsistency in response, possibly due to experimental variability."
-    elif r_squared >= 0.70:
-        return f"Fair model fit (R² = {r_squared:.3f}) - Higher biological variability. " + \
-               "Suggests heterogeneous population or experimental issues."
-    else:
-        return f"Poor model fit (R² = {r_squared:.3f}) - High biological variability. " + \
-               "May indicate mixed populations, experimental problems, or inappropriate dose range."
-
-def compute_resistance_ratio_ci(result1, result2, ld_level=50, alpha=ALPHA_LEVEL):
-    """
-    Compute resistance ratio (LDx_1 / LDx_2) with 95% CI using the delta method,
-    consistent with the log10-scale approach used in compute_ldx_with_ci().
-
-    Both LD estimates are computed on the log10(concentration) scale, so the
-    ratio's confidence interval is derived by combining the two independent
-    log10-scale variances rather than mixing log10 and natural-log scales.
-    """
-    intercept1, slope1 = result1.params
-    intercept2, slope2 = result2.params
-
-    if not (np.isfinite(intercept1) and np.isfinite(slope1) and
-            np.isfinite(intercept2) and np.isfinite(slope2)):
-        raise ValueError("Model parameters are not finite. Check data quality and model convergence.")
-
-    if abs(slope1) < 1e-10 or abs(slope2) < 1e-10:
-        raise ValueError("Slope is too close to zero (flat dose-response curve) in one or both models.")
-
-    target_quantile = norm.ppf(ld_level / 100.0)
-
-    # Point estimates on log10(concentration) scale
-    log_conc_ld1 = (target_quantile - intercept1) / slope1
-    log_conc_ld2 = (target_quantile - intercept2) / slope2
-
-    # Delta-method variance for each LD estimate (log10 scale) - same derivation as compute_ldx_with_ci
-    cov1 = result1.cov_params()
-    var_intercept1 = cov1.iloc[0, 0]
-    var_slope1 = cov1.iloc[1, 1]
-    cov_is1 = cov1.iloc[0, 1]
-
-    cov2 = result2.cov_params()
-    var_intercept2 = cov2.iloc[0, 0]
-    var_slope2 = cov2.iloc[1, 1]
-    cov_is2 = cov2.iloc[0, 1]
-
-    if not all(np.isfinite([var_intercept1, var_slope1, cov_is1, var_intercept2, var_slope2, cov_is2])):
-        raise ValueError("Invalid covariance matrix values. Check model fitting.")
-
-    grad_intercept1 = -1 / slope1
-    grad_slope1 = -(target_quantile - intercept1) / (slope1 ** 2)
-    var_log_ld1 = (grad_intercept1 ** 2) * var_intercept1 + \
-                  (grad_slope1 ** 2) * var_slope1 + \
-                  2 * grad_intercept1 * grad_slope1 * cov_is1
-
-    grad_intercept2 = -1 / slope2
-    grad_slope2 = -(target_quantile - intercept2) / (slope2 ** 2)
-    var_log_ld2 = (grad_intercept2 ** 2) * var_intercept2 + \
-                  (grad_slope2 ** 2) * var_slope2 + \
-                  2 * grad_intercept2 * grad_slope2 * cov_is2
-
-    if var_log_ld1 < 0 or var_log_ld2 < 0:
-        raise ValueError("Negative variance calculated in LD estimation. Check model covariance matrix.")
-
-    # log10(ratio) = log10(LDx_1) - log10(LDx_2); variances add for independent samples
-    log10_rr = log_conc_ld1 - log_conc_ld2
-    se_log10_rr = np.sqrt(var_log_ld1 + var_log_ld2)
-
-    if not np.isfinite(se_log10_rr) or se_log10_rr < 0:
-        raise ValueError("Could not calculate a valid standard error for the resistance ratio.")
-
-    z_critical = norm.ppf(1 - alpha / 2)
-
-    rr = 10 ** log10_rr
-    rr_lower = 10 ** (log10_rr - z_critical * se_log10_rr)
-    rr_upper = 10 ** (log10_rr + z_critical * se_log10_rr)
-
-    if not (np.isfinite(rr) and np.isfinite(rr_lower) and np.isfinite(rr_upper) and rr > 0):
-        raise ValueError("Resistance ratio confidence interval calculation produced invalid bounds.")
-
-    return rr, rr_lower, rr_upper
 
 def calculate_replicate_variability(df):
     """Calculate variability statistics for replicates"""
@@ -1647,7 +1517,7 @@ def build_multi_comparisons(analyses, selected_keys, mode, reference_key=None,
                 denominator_name = fold['lower_name']
             else:
                 ratio, lower, upper = compute_resistance_ratio_ci(
-                    a['result'], b['result'], lc_level=50
+                    a['result'], b['result'], 50
                 )
         except Exception as exc:
             ratio_error = str(exc)
@@ -2009,7 +1879,7 @@ def build_ai_context():
         )
     )
     return _json_safe({
-        'tool_version': '11.7',
+        'tool_version': '11.8',
         'individual_analyses': individual_values,
         'multi_dataset_analysis': multi,
         'scope_note': (
@@ -2145,7 +2015,7 @@ def _format_comparison_table(comparisons):
 
 def main():
     st.markdown('<div class="main-header">📊 Probit Analysis Tool</div>', unsafe_allow_html=True)
-    st.markdown("**Web Version 11.7** — single- and multi-dataset bioassay probit analysis")
+    st.markdown("**Web Version 11.8** — single- and multi-dataset bioassay probit analysis")
 
     with st.sidebar:
         st.markdown("### 🎯 Version 11")
@@ -2164,7 +2034,7 @@ def main():
         )
         st.markdown("---")
         st.markdown("### ℹ️ About")
-        st.markdown("**Version 11.7 Web**")
+        st.markdown("**Version 11.8 Web**")
         st.markdown("USDA ARS Cattle Fever Tick Research Unit")
         st.markdown("Edinburg, TX, USA")
 
