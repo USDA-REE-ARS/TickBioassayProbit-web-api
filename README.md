@@ -21,7 +21,7 @@ This tool directly supports the USDA Agricultural Research Service mission by:
 **Developed by:** Jason Tidwell, Microbiologist  
 **Institution:** USDA ARS Cattle Fever Tick Research Unit  
 **Location:** Edinburg, TX  
-**Version:** 10.3 (Web Application)
+**Version:** 11.8 (Web Application)
 
 ### Key Problem Solved
 Many research institutions have IT restrictions preventing software installation. This web-based tool eliminates installation barriers by running entirely in a web browser, making probit analysis accessible to researchers worldwide without requiring local software, IT approval, or programming knowledge.
