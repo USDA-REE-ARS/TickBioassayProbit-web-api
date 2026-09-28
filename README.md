@@ -68,7 +68,7 @@ cd TickBioassayProbit-web-api
 pip install -r requirements.txt
 
 # Run app
-streamlit run probit_web_app_v11.9.py
+streamlit run probit_web_app.py
 ```
 
 #Opens at `http://localhost:8501`
