@@ -10,7 +10,7 @@ pandas>=3.0.5
 scipy>=1.18.0
 
 # Statistical modeling
-statsmodels>=0.14.6
+statsmodels>=0.15.0
 
 # Visualization
 matplotlib>=3.11.1
