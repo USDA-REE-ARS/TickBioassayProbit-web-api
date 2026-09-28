@@ -1,7 +1,7 @@
 """
 Probit Analysis Tool - Web Application
 Streamlit-based web interface for bioassay probit regression analysis
-Version: 11.8 Web
+Version: 11.9 Web
 
 Run with: streamlit run probit_web_app.py
 """
@@ -654,7 +654,7 @@ def compute_resistance_ratio_ci(result1, result2, lc_level=50, alpha=ALPHA_LEVEL
 
     ``lc_level`` is the current parameter name. ``ld_level`` is accepted as a
     backward-compatible alias so older deployed callers do not fail while the
-    application transitions fully to LC terminology. Internal v11.8 callers
+    application transitions fully to LC terminology. Internal v11.9 callers
     pass the LC level positionally to avoid keyword-name coupling.
 
     Both LC estimates are computed on the log10(concentration) scale, so the
@@ -1879,7 +1879,7 @@ def build_ai_context():
         )
     )
     return _json_safe({
-        'tool_version': '11.8',
+        'tool_version': '11.9',
         'individual_analyses': individual_values,
         'multi_dataset_analysis': multi,
         'scope_note': (
@@ -2015,7 +2015,7 @@ def _format_comparison_table(comparisons):
 
 def main():
     st.markdown('<div class="main-header">📊 Probit Analysis Tool</div>', unsafe_allow_html=True)
-    st.markdown("**Web Version 11.8** — single- and multi-dataset bioassay probit analysis")
+    st.markdown("**Web Version 11.9** — single- and multi-dataset bioassay probit analysis")
 
     with st.sidebar:
         st.markdown("### 🎯 Version 11")
@@ -2034,7 +2034,7 @@ def main():
         )
         st.markdown("---")
         st.markdown("### ℹ️ About")
-        st.markdown("**Version 11.8 Web**")
+        st.markdown("**Version 11.9 Web**")
         st.markdown("USDA ARS Cattle Fever Tick Research Unit")
         st.markdown("Edinburg, TX, USA")
 
@@ -2073,6 +2073,9 @@ def main():
             accept_multiple_files=True,
             key='v11_multi_uploader',
             help="Each file should represent one population/strain and one chemical concentration scale."
+        )
+        st.caption(
+            "Not sure how to format your data? See **Example Dataset Formats** in the Help tab for working examples."
         )
 
         records = []
@@ -2632,6 +2635,57 @@ def main():
     # ------------------------------------------------------------------
     with tabs[4]:
         st.markdown("## Help & Documentation")
+
+        st.markdown("### Example Dataset Formats")
+        st.markdown(
+            "The examples below are **illustrative demonstration data**. Each file should represent one "
+            "population/strain tested against one chemical on a single concentration scale."
+        )
+
+        st.markdown("#### Option 1 — Legacy metadata-first text format")
+        st.code(
+            "Example Population\n"
+            "Amitraz\n"
+            "concentration\tn\tmortality\n"
+            "0\t100\t2\n"
+            "0.01\t100\t8\n"
+            "0.03\t100\t24\n"
+            "0.10\t100\t61\n"
+            "0.30\t100\t91",
+            language="text"
+        )
+        st.caption(
+            "In the legacy format, line 1 is the strain/population name and line 2 is the chemical/acaricide name. "
+            "If concentration units are not stored in the file, enter them once in the Upload Data tab."
+        )
+
+        st.markdown("#### Option 2 — Header-first CSV format")
+        st.code(
+            "population,chemical,units,concentration,n,mortality\n"
+            "Example Population,Amitraz,ppm,0,100,2\n"
+            "Example Population,Amitraz,ppm,0.01,100,8\n"
+            "Example Population,Amitraz,ppm,0.03,100,24\n"
+            "Example Population,Amitraz,ppm,0.10,100,61\n"
+            "Example Population,Amitraz,ppm,0.30,100,91",
+            language="csv"
+        )
+
+        st.markdown(
+            "**Required analytical fields:** `concentration`, `n`, and `mortality`. The app can recognize several common "
+            "alternative column names and also provides manual column mapping. `n` and `mortality` should be whole-number "
+            "counts, with mortality no greater than `n`. At least **3 distinct positive treatment concentrations** are required."
+        )
+        st.info(
+            "A row with `concentration = 0` is optional and is treated as an untreated control. If control mortality is "
+            "greater than 0%, Abbott correction is applied to treatment mortality before model fitting; the control row "
+            "itself is not included in the concentration-response regression."
+        )
+        st.markdown(
+            "When comparing multiple datasets, use the same chemical/active ingredient and directly comparable concentration "
+            "units for all selected datasets. The application will request confirmation of the shared concentration units."
+        )
+        st.markdown("---")
+
         st.markdown(
             """
 ### Version 11 workflow
