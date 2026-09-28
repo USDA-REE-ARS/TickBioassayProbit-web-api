@@ -13,7 +13,7 @@ scipy>=1.18.0
 statsmodels>=0.14.6
 
 # Visualization
-matplotlib>=3.11.1
+matplotlib>=3.11.2
 
 # PDF generation
 fpdf>=1.7.2
